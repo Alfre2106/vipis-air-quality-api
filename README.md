@@ -1,20 +1,39 @@
 # VIPIS — API de Monitoreo de Calidad del Aire
 
-> API REST para el sistema VIPIS (Calidad del Aire Vía Parque Islas de Salamanca), orientado al registro, almacenamiento y consulta de mediciones ambientales.
+> API REST para VIPIS (Calidad del Aire Vía Parque Islas de Salamanca), un proyecto orientado al registro, almacenamiento y consulta de mediciones ambientales mediante una arquitectura backend desplegada en la nube.
 
-## 📌 Descripción
+## 🌐 API desplegada
 
-**VIPIS (Calidad del Aire Vía Parque Islas de Salamanca)** es un proyecto práctico de desarrollo de software enfocado en el monitoreo de variables ambientales mediante una arquitectura que integra una fuente de datos basada en ESP32/Wokwi, una API REST, una base de datos PostgreSQL y servicios de despliegue en la nube.
+El backend está desplegado en **Render** y utiliza **PostgreSQL en Neon** como base de datos.
 
-El backend está desarrollado con **Python y FastAPI**, utiliza **SQLAlchemy** para la interacción con la base de datos y **PostgreSQL** como sistema de gestión de datos. La base de datos del proyecto utiliza **Neon** y el backend se encuentra preparado para su despliegue mediante **Render**.
+**Swagger UI / documentación interactiva:**
 
-El proyecto forma parte de un taller práctico de una asignatura de Inteligencia Artificial y está planteado para evolucionar hacia una solución que también incluya una aplicación de escritorio desarrollada en Java, exportación de registros y análisis asistido por IA mediante Open WebUI.
+https://vipis-air-quality-api.onrender.com/docs
+
+> La documentación pública permite explorar los endpoints disponibles de la API y probar sus operaciones.
 
 ---
 
-## 🎯 Objetivos del proyecto
+## 📌 ¿Qué es VIPIS?
 
-La API tiene como objetivo proporcionar un backend centralizado para gestionar información relacionada con:
+**VIPIS (Calidad del Aire Vía Parque Islas de Salamanca)** es un proyecto práctico de desarrollo de software enfocado en el monitoreo de variables ambientales.
+
+La solución integra:
+
+- **ESP32 / Wokwi** para la adquisición y simulación de datos ambientales.
+- **FastAPI** para construir la API REST.
+- **SQLAlchemy** como ORM y capa de acceso a datos.
+- **PostgreSQL** como base de datos relacional.
+- **Neon** como servicio administrado de PostgreSQL.
+- **Render** para el despliegue del backend.
+
+El proyecto forma parte de un taller práctico de una asignatura de Inteligencia Artificial y está diseñado para evolucionar posteriormente con una aplicación de escritorio en Java, exportación de registros y análisis asistido por IA mediante Open WebUI.
+
+---
+
+## 🎯 Objetivos
+
+El backend proporciona una base para gestionar información relacionada con:
 
 - Ubicaciones de monitoreo.
 - Sensores.
@@ -30,46 +49,66 @@ La API tiene como objetivo proporcionar un backend centralizado para gestionar i
 - Usuarios.
 - Historial de mediciones.
 
+El objetivo es centralizar las mediciones ambientales en una API REST que pueda ser consumida por diferentes clientes, incluyendo posteriormente una aplicación de escritorio en Java.
+
+---
+
+## 🧰 Stack tecnológico
+
+| Área | Tecnología |
+|---|---|
+| Lenguaje | Python |
+| Backend | FastAPI |
+| API | REST |
+| ORM | SQLAlchemy |
+| Base de datos | PostgreSQL |
+| Base de datos cloud | Neon |
+| Despliegue | Render |
+| IoT / simulación | ESP32 + Wokwi |
+| Control de versiones | Git + GitHub |
+| Cliente futuro | Java |
+| IA futura | Open WebUI |
+
 ---
 
 ## 🏗️ Arquitectura
 
-La arquitectura actual del backend puede representarse de la siguiente manera:
+### Arquitectura actual
 
 ```text
-                 ┌──────────────────────┐
-                 │     ESP32 / Wokwi    │
-                 │ Simulación de datos   │
-                 │    ambientales       │
-                 └──────────┬───────────┘
-                            │
-                            │ HTTP / REST
-                            ▼
-                 ┌──────────────────────┐
-                 │       FastAPI        │
-                 │       REST API       │
-                 └──────────┬───────────┘
-                            │
-                            ▼
-                 ┌──────────────────────┐
-                 │   Capa Repository    │
-                 │   Operaciones CRUD   │
-                 └──────────┬───────────┘
-                            │
-                            ▼
-                 ┌──────────────────────┐
-                 │      SQLAlchemy      │
-                 │         ORM          │
-                 └──────────┬───────────┘
-                            │
-                            ▼
-                 ┌──────────────────────┐
-                 │      PostgreSQL      │
-                 │         Neon         │
-                 └──────────────────────┘
+┌───────────────────────┐
+│     ESP32 / Wokwi     │
+│ Datos ambientales     │
+└───────────┬───────────┘
+            │
+            │ HTTP / REST
+            ▼
+┌───────────────────────┐
+│        FastAPI        │
+│       REST API        │
+└───────────┬───────────┘
+            │
+            ▼
+┌───────────────────────┐
+│   Repository Layer    │
+│     Operaciones CRUD  │
+└───────────┬───────────┘
+            │
+            ▼
+┌───────────────────────┐
+│      SQLAlchemy       │
+│          ORM          │
+└───────────┬───────────┘
+            │
+            ▼
+┌───────────────────────┐
+│ PostgreSQL / Neon     │
+└───────────────────────┘
 ```
 
-La arquitectura general prevista para el proyecto incluye posteriormente:
+### Arquitectura prevista
+
+La solución completa contempla posteriormente:
 
 ```text
 ESP32 / Wokwi
@@ -80,68 +119,163 @@ FastAPI REST API
       ▼
 PostgreSQL / Neon
       │
-      ├──────────────► Aplicación de escritorio Java
-      │                         │
-      │                         ▼
-      │                    Exportación
-      │                      de registros
-      │                         │
-      │                         ▼
-      │                       PDF
-      │                         │
-      │                         ▼
-      │                    Open WebUI
-      │                         │
-      │                         ▼
-      │                 Análisis asistido por IA
+      ├──────────────► Aplicación Java
+      │                      │
+      │                      ▼
+      │               Exportación
+      │               de mediciones
+      │                      │
+      │                      ▼
+      │                     PDF
+      │                      │
+      │                      ▼
+      │                 Open WebUI
+      │                      │
+      │                      ▼
+      │                Modelo de IA
+      │                      │
+      │                      ▼
+      │             Análisis del reporte
       │
       ▼
-Render
+    Render
 ```
 
-> **Nota:** la aplicación Java, la exportación a PDF y la integración con Open WebUI corresponden a etapas posteriores del desarrollo y no se presentan como funcionalidades terminadas del backend actual.
+> **Importante:** la aplicación Java, la exportación a PDF y la integración con Open WebUI corresponden a etapas posteriores. No se presentan como funcionalidades terminadas del backend actual.
 
 ---
 
-## 🛠️ Tecnologías utilizadas
+## 🚀 API REST
 
-### Backend
+La API está desarrollada con FastAPI y expone recursos mediante HTTP.
 
-- Python
-- FastAPI
-- SQLAlchemy
-- REST API
+Los recursos principales utilizan operaciones CRUD:
 
-### Base de datos
+```text
+GET     /<recurso>
+GET     /<recurso>/{item_id}
+POST    /<recurso>
+PUT     /<recurso>/{item_id}
+DELETE  /<recurso>/{item_id}
+```
 
-- PostgreSQL
-- Neon
-- SQLAlchemy ORM
+### Recursos
 
-### Desarrollo y herramientas
+La API desplegada contempla recursos para:
 
-- Git
-- GitHub
-- Python
-- Variables de entorno
-- Postman
-- Visual Studio Code
+- `ubicaciones`
+- `sensores`
+- `dispositivos`
+- `dispositivo_sensor`
+- `tipos_medicion`
+- `mediciones`
+- `valores_medicion`
+- `niveles_riesgo`
+- `rangos_riesgo`
+- `clasificaciones`
+- `alertas`
+- `calibraciones`
+- `mantenimientos`
+- `usuarios`
 
-### Despliegue
+Además, dispone de endpoints específicos para consultas:
 
-- Render
+```text
+GET /historial
+GET /rangos
+```
 
-### Simulación / IoT
+### Ejemplo de CRUD
 
-- ESP32
-- Wokwi
-- Sensores ambientales
+```text
+GET     /mediciones
+POST    /mediciones
+GET     /mediciones/{item_id}
+PUT     /mediciones/{item_id}
+DELETE  /mediciones/{item_id}
+```
+
+La documentación interactiva de FastAPI permite consultar los esquemas, parámetros, respuestas y operaciones disponibles.
 
 ---
 
-## 📂 Estructura del proyecto
+## 📊 Historial de mediciones
 
-La estructura principal del backend es:
+El backend incluye:
+
+```text
+GET /historial
+```
+
+Este endpoint está destinado a consultar información histórica de las mediciones registradas.
+
+El historial permite servir como fuente de información para los clientes que posteriormente consumirán la API.
+
+---
+
+## 📈 Rangos
+
+La API incluye:
+
+```text
+GET /rangos
+```
+
+Este endpoint permite consultar los rangos utilizados por el sistema para representar los niveles asociados a las mediciones.
+
+---
+
+## 🗄️ Base de datos
+
+VIPIS utiliza **PostgreSQL** como sistema gestor de base de datos.
+
+La base de datos se encuentra alojada en **Neon**, mientras que el backend se ejecuta en **Render**.
+
+```text
+             Render
+                │
+                │ conexión PostgreSQL
+                ▼
+              Neon
+                │
+                ▼
+          PostgreSQL
+```
+
+### Modelos principales
+
+#### Monitoreo
+
+- `Ubicacion`
+- `Sensor`
+- `Dispositivo`
+- `DispositivoSensor`
+
+#### Mediciones
+
+- `TipoMedicion`
+- `Medicion`
+- `ValorMedicion`
+
+#### Gestión de riesgo
+
+- `NivelRiesgo`
+- `RangoRiesgo`
+- `Clasificacion`
+- `Alerta`
+
+#### Mantenimiento
+
+- `Calibracion`
+- `Mantenimiento`
+
+#### Usuarios
+
+- `Usuario`
+
+---
+
+## 📁 Estructura del proyecto
 
 ```text
 vipis-air-quality-api/
@@ -159,185 +293,129 @@ vipis-air-quality-api/
 
 ### `main.py`
 
-Es el punto de entrada de la aplicación FastAPI.
+Punto de entrada de la aplicación FastAPI.
 
-Se encarga principalmente de:
-
-- Crear la aplicación FastAPI.
-- Registrar las rutas.
-- Configurar los endpoints CRUD.
-- Crear las tablas mediante SQLAlchemy.
-- Exponer endpoints específicos para consultas de historial y rangos.
+Contiene la configuración de la aplicación y las rutas de la API.
 
 ### `database.py`
 
-Contiene la configuración relacionada con la conexión a la base de datos y la configuración de SQLAlchemy.
+Contiene la configuración de la conexión con PostgreSQL y los componentes relacionados con SQLAlchemy.
 
 ### `models.py`
 
-Define los modelos utilizados para representar las entidades de la aplicación y su estructura en la base de datos.
+Define los modelos utilizados por la aplicación y su representación en la base de datos.
 
 ### `repository.py`
 
-Implementa la capa Repository utilizada para realizar operaciones CRUD sobre las entidades almacenadas.
+Implementa operaciones de acceso y manipulación de datos mediante una capa Repository.
 
 ### `render.yaml`
 
-Contiene la configuración relacionada con el despliegue del proyecto en Render.
+Contiene la configuración utilizada para el despliegue del servicio en Render.
+
+### `requirements.txt`
+
+Define las dependencias Python necesarias para ejecutar el backend.
+
+### `.env.example`
+
+Sirve como referencia para configurar las variables de entorno sin publicar credenciales reales.
 
 ---
 
-## 🗄️ Modelo de datos
+## 📚 Documentación de la API
 
-El backend contempla entidades relacionadas con diferentes componentes del sistema de monitoreo.
-
-### Monitoreo
-
-- `Ubicacion`
-- `Sensor`
-- `Dispositivo`
-- `DispositivoSensor`
-
-### Mediciones
-
-- `TipoMedicion`
-- `Medicion`
-- `ValorMedicion`
-
-### Gestión de riesgos
-
-- `NivelRiesgo`
-- `RangoRiesgo`
-- `Clasificacion`
-- `Alerta`
-
-### Mantenimiento
-
-- `Calibracion`
-- `Mantenimiento`
-
-### Usuarios
-
-- `Usuario`
-
-La información de ubicación contempla coordenadas geográficas para asociar los puntos de monitoreo con una posición determinada.
-
----
-
-## 🚀 API REST
-
-El backend utiliza FastAPI para exponer los recursos mediante HTTP.
-
-Para los principales modelos se implementan operaciones CRUD:
-
-```text
-GET     /<recurso>
-GET     /<recurso>/{id}
-POST    /<recurso>
-PUT     /<recurso>/{id}
-DELETE  /<recurso>/{id}
-```
-
-Por ejemplo:
-
-```text
-GET /sensores
-GET /sensores/1
-
-POST /sensores
-
-PUT /sensores/1
-
-DELETE /sensores/1
-```
-
-Los recursos disponibles corresponden a los modelos registrados en la aplicación.
-
----
-
-## 📊 Historial de mediciones
-
-El backend incluye un endpoint específico para consultar el historial:
-
-```text
-GET /historial
-```
-
-Este endpoint permite obtener información relacionada con las mediciones registradas, incluyendo datos como:
-
-- Identificador de la medición.
-- Fecha y hora.
-- Dispositivo.
-- Valores registrados.
-- Nivel de riesgo.
-
-La respuesta se entrega en formato JSON.
-
----
-
-## 📈 Rangos de riesgo
-
-La API también dispone del endpoint:
-
-```text
-GET /rangos
-```
-
-Este recurso permite consultar la configuración de rangos asociados a los tipos de medición y sus niveles de riesgo.
-
----
-
-## 📚 Documentación automática de la API
-
-FastAPI genera documentación interactiva automáticamente.
+FastAPI genera automáticamente documentación basada en OpenAPI.
 
 ### Swagger UI
 
-```text
-/docs
-```
-
-En una ejecución local:
+Localmente:
 
 ```text
 http://127.0.0.1:8000/docs
 ```
 
+En producción:
+
+https://vipis-air-quality-api.onrender.com/docs
+
 ### ReDoc
 
-```text
-/redoc
-```
-
-En una ejecución local:
+Localmente:
 
 ```text
 http://127.0.0.1:8000/redoc
 ```
 
-Estas interfaces permiten explorar los endpoints disponibles y realizar pruebas sobre la API.
+La documentación permite explorar la API sin necesidad de consultar manualmente cada ruta del código.
 
 ---
 
-## ⚙️ Variables de entorno
+## 🔌 ESP32 y Wokwi
 
-La configuración de la base de datos debe manejarse mediante variables de entorno.
+La propuesta utiliza **ESP32** como plataforma para la adquisición de datos ambientales.
 
-Se utiliza:
+Durante el desarrollo se utiliza **Wokwi** para simular el comportamiento del dispositivo y enviar datos hacia el backend.
+
+Las variables contempladas incluyen:
+
+- Calidad del aire.
+- Temperatura.
+- Humedad.
+
+Los sensores considerados en la propuesta son:
+
+- **MQ-135** — calidad del aire.
+- **DHT11** — temperatura y humedad.
+- **DHT22** — temperatura y humedad.
+
+Flujo de integración:
 
 ```text
-.env
+ESP32 / Wokwi
+      │
+      │ Datos ambientales
+      ▼
+FastAPI
+      │
+      ▼
+PostgreSQL / Neon
 ```
 
-y se proporciona:
+---
+
+## ☁️ Despliegue
+
+El backend se encuentra desplegado en **Render**.
+
+La arquitectura de despliegue es:
 
 ```text
-.env.example
+Internet
+   │
+   ▼
+┌───────────────┐
+│    Render     │
+│    FastAPI    │
+└───────┬───────┘
+        │
+        │ PostgreSQL
+        ▼
+┌───────────────┐
+│     Neon      │
+│  PostgreSQL   │
+└───────────────┘
 ```
 
-como referencia para la configuración.
+El archivo:
 
-Las credenciales y cadenas de conexión no deben almacenarse directamente en el código fuente ni publicarse en GitHub.
+```text
+render.yaml
+```
+
+contiene la configuración asociada al despliegue.
+
+Las credenciales y variables sensibles deben configurarse mediante variables de entorno en el entorno de ejecución.
 
 ---
 
@@ -347,15 +425,10 @@ Las credenciales y cadenas de conexión no deben almacenarse directamente en el 
 
 ```bash
 git clone https://github.com/Alfre2106/vipis-air-quality-api.git
-```
-
-Entrar al proyecto:
-
-```bash
 cd vipis-air-quality-api
 ```
 
-### 2. Crear un entorno virtual
+### 2. Crear el entorno virtual
 
 En Windows:
 
@@ -377,35 +450,31 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Configurar las variables de entorno
+### 4. Configurar variables de entorno
 
-Crear un archivo:
+Crear:
 
 ```text
 .env
 ```
 
-tomando como referencia:
+utilizando `.env.example` como referencia.
 
-```text
-.env.example
-```
+Configurar la conexión correspondiente a PostgreSQL.
 
-Configurar allí la conexión correspondiente a PostgreSQL.
-
-### 5. Ejecutar la aplicación
+### 5. Ejecutar FastAPI
 
 ```bash
 uvicorn main:app --reload
 ```
 
-La API estará disponible localmente en:
+La API estará disponible en:
 
 ```text
 http://127.0.0.1:8000
 ```
 
-La documentación interactiva estará disponible en:
+Swagger:
 
 ```text
 http://127.0.0.1:8000/docs
@@ -413,98 +482,47 @@ http://127.0.0.1:8000/docs
 
 ---
 
-## ☁️ Despliegue en la nube
+## 🔐 Seguridad
 
-El proyecto utiliza:
+Las credenciales y configuraciones sensibles deben mantenerse fuera del código fuente.
 
-- **Render** para el despliegue del backend.
-- **Neon** para PostgreSQL.
+No deben publicarse:
 
-La arquitectura de despliegue es:
+- Contraseñas.
+- Cadenas de conexión privadas.
+- Claves API.
+- Tokens.
+- Credenciales de servicios.
 
-```text
-                 Internet
-                    │
-                    ▼
-              ┌───────────┐
-              │  Render   │
-              │  FastAPI  │
-              └─────┬─────┘
-                    │
-                    │ conexión PostgreSQL
-                    ▼
-              ┌───────────┐
-              │   Neon    │
-              │ PostgreSQL│
-              └───────────┘
-```
+El proyecto utiliza variables de entorno para separar la configuración sensible del código.
 
-La configuración específica del servicio de Render se encuentra en:
-
-```text
-render.yaml
-```
-
-Las credenciales y variables sensibles deben configurarse directamente en el entorno de despliegue.
+Para una evolución posterior del sistema se pueden incorporar mecanismos adicionales de autenticación, autorización y control de acceso.
 
 ---
 
-## 🔌 Integración con ESP32 y Wokwi
+## 🖥️ Aplicación de escritorio en Java
 
-El proyecto utiliza **ESP32** como plataforma para la adquisición de datos ambientales.
+Como siguiente componente del proyecto se está desarrollando una aplicación de escritorio en **Java**.
 
-Durante el desarrollo se utiliza **Wokwi** como simulador para generar y enviar datos antes de trabajar con sensores físicos.
+La aplicación consumirá la API REST de VIPIS para trabajar con la información almacenada en PostgreSQL.
 
-Entre las variables contempladas por el proyecto se encuentran:
-
-- Calidad del aire.
-- Temperatura.
-- Humedad.
-
-Los sensores considerados en la propuesta incluyen:
-
-- MQ-135.
-- DHT11.
-- DHT22.
-
-El flujo esperado es:
-
-```text
-ESP32 / Wokwi
-      │
-      │ Datos ambientales
-      ▼
-FastAPI
-      │
-      ▼
-PostgreSQL / Neon
-```
-
----
-
-## 🖥️ Aplicación de escritorio Java
-
-Como siguiente componente del sistema se está desarrollando una aplicación de escritorio en **Java**.
-
-La aplicación estará conectada con la API y la base de datos a través de los servicios disponibles del backend.
-
-Entre las funcionalidades previstas se encuentran:
+Las funcionalidades previstas incluyen:
 
 - Consulta de mediciones.
 - Consulta del historial.
 - Visualización de registros.
-- Consumo de la API REST.
-- Exportación de registros de mediciones.
+- Consumo de endpoints REST.
+- Exportación de registros.
 
-> 🚧 **En desarrollo.**
+**Estado:** 🚧 En desarrollo.
 
 ---
 
-## 📄 Exportación y análisis mediante IA
+## 🤖 Exportación, PDF y análisis con IA
 
-Una etapa posterior del proyecto contempla la exportación de los registros de mediciones desde la aplicación de escritorio.
+Una etapa posterior contempla generar un reporte de las mediciones desde la aplicación Java y utilizarlo como entrada para un flujo de análisis mediante IA.
 
-El flujo previsto es:
+Flujo previsto:
 
 ```text
 Mediciones
@@ -528,58 +546,42 @@ Open WebUI
 Modelo de IA
     │
     ▼
-Análisis de las mediciones
+Análisis del reporte
 ```
 
-El objetivo es utilizar un modelo de IA mediante **Open WebUI** para analizar la información contenida en los reportes generados.
+El objetivo es utilizar el documento generado a partir de las mediciones como fuente para realizar análisis asistidos por un modelo de IA mediante **Open WebUI**.
 
-> 🚧 **Esta integración se encuentra en desarrollo y no se presenta como una funcionalidad terminada del backend actual.**
-
----
-
-## 🔐 Consideraciones de seguridad
-
-El proyecto utiliza variables de entorno para evitar almacenar directamente las credenciales de la base de datos en el código fuente.
-
-No deben publicarse:
-
-- Contraseñas.
-- Cadenas de conexión privadas.
-- Claves API.
-- Tokens.
-- Credenciales de servicios.
-
-Para una versión de producción más completa se contempla posteriormente la incorporación de mecanismos adicionales como autenticación, autorización, validaciones de seguridad y controles de acceso.
+**Estado:** 🚧 En desarrollo.
 
 ---
 
-## 🧪 Estado actual del proyecto
+## 🧪 Estado del proyecto
 
 ### Backend
 
-- [x] API desarrollada con FastAPI.
-- [x] Integración con SQLAlchemy.
-- [x] Integración con PostgreSQL.
+- [x] API REST con FastAPI.
+- [x] SQLAlchemy.
+- [x] PostgreSQL.
 - [x] Base de datos en Neon.
 - [x] Capa Repository.
 - [x] Operaciones CRUD.
-- [x] Endpoint de historial.
-- [x] Endpoint de rangos.
-- [x] Configuración de despliegue en Render.
-- [x] Documentación automática mediante FastAPI.
+- [x] Historial de mediciones.
+- [x] Consulta de rangos.
+- [x] Despliegue en Render.
+- [x] Documentación automática con Swagger/OpenAPI.
 
-### Integración IoT
+### IoT
 
 - [x] Arquitectura basada en ESP32.
 - [x] Simulación mediante Wokwi.
-- [x] Definición de variables ambientales.
-- [x] Consideración de sensores MQ-135, DHT11 y DHT22.
+- [x] Variables ambientales definidas.
+- [x] Integración planteada para MQ-135, DHT11 y DHT22.
 
 ### Próximas etapas
 
-- [ ] Aplicación de escritorio en Java.
+- [ ] Aplicación de escritorio Java.
 - [ ] Integración completa Java ↔ API.
-- [ ] Consulta de registros desde la aplicación.
+- [ ] Consulta de registros desde Java.
 - [ ] Exportación de mediciones.
 - [ ] Generación de PDF.
 - [ ] Integración con Open WebUI.
@@ -591,16 +593,17 @@ Para una versión de producción más completa se contempla posteriormente la in
 
 VIPIS se desarrolla como un **taller práctico de una asignatura de Inteligencia Artificial**.
 
-El proyecto busca integrar diferentes áreas de desarrollo tecnológico en una única solución:
+El proyecto integra diferentes áreas:
 
 - Desarrollo backend.
-- Diseño y consumo de APIs REST.
+- Diseño de APIs REST.
 - Bases de datos relacionales.
+- ORM con SQLAlchemy.
 - Despliegue en la nube.
-- Simulación de dispositivos IoT.
+- Simulación IoT.
 - Desarrollo de aplicaciones de escritorio.
 - Exportación y procesamiento de datos.
-- Integración de modelos de IA.
+- Integración de IA.
 
 La propuesta tiene como eje el monitoreo de la **calidad del aire en el Vía Parque Islas de Salamanca**.
 
@@ -612,18 +615,18 @@ La propuesta tiene como eje el monitoreo de la **calidad del aire en el Vía Par
 
 Estudiante de Ingeniería de Sistemas.
 
-GitHub:
+**GitHub:**
 
 https://github.com/Alfre2106
 
-Repositorio:
+**Repositorio:**
 
 https://github.com/Alfre2106/vipis-air-quality-api
 
 ---
 
-## 📌 Estado del proyecto
+## 📌 Estado
 
 **En desarrollo.**
 
-El backend y la infraestructura principal de API + PostgreSQL + Neon + Render forman la base actual del sistema. Las aplicaciones cliente, la exportación de reportes y el componente de análisis mediante IA se incorporarán progresivamente.
+La infraestructura principal **FastAPI + PostgreSQL + Neon + Render** se encuentra implementada. Las siguientes etapas ampliarán el sistema mediante la aplicación Java, la exportación de reportes y el análisis asistido por IA.
