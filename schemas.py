@@ -20,3 +20,31 @@ class MedicionResponse(BaseModel):
     humedad: float
 
     nivel_riesgo: str | None = None
+    
+    # ============================================================
+# ESQUEMAS PARA INFLUXDB, YOLO Y FUSIÓN SENSORIAL (TALLER 2)
+# ============================================================
+
+class TelemetriaInflux(BaseModel):
+    timestamp: str | None = None
+    dispositivo: str = "esp32_01"
+    eco2: float | None = None
+    tvoc: float | None = None
+    temperatura: float | None = None
+    humedad: float | None = None
+
+class DeteccionYOLO(BaseModel):
+    clase: str
+    confianza: float
+    bbox: list[float] | None = None
+
+class FusionSensorialRespuesta(BaseModel):
+    alerta_activa: bool
+    nivel_riesgo: str
+    mensaje: str
+
+class MonitoreoFusionadoResponse(BaseModel):
+    timestamp: str
+    telemetria: TelemetriaInflux
+    detecciones_yolo: list[DeteccionYOLO]
+    fusion_sensorial: FusionSensorialRespuesta
