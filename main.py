@@ -308,7 +308,7 @@ def stats_max_min_dia(db: Session = Depends(get_db)):
         JOIN valores_medicion v ON v.medicion_id = m.id
         WHERE v.tipo_medicion_id = 1
           AND (m.fecha_hora AT TIME ZONE 'UTC' AT TIME ZONE 'America/Bogota')::date =
-              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AT TIME ZONE 'America/Bogota')::date;
+              (CURRENT_TIMESTAMP AT TIME ZONE 'America/Bogota')::date;
     """)
     res = db.execute(query).fetchone()
     maxi = res.maximo if res and res.maximo is not None else 0
