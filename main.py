@@ -202,9 +202,12 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
     prompt_usuario = mensaje.texto
     
     system_instruction = """
-    Eres el asistente virtual del sistema IoT VIPIS. Analiza la orden del usuario y responde ÚNICAMENTE en formato JSON plano con dos campos exactos:
-    - "accion": elige estrictamente entre "encender_led", "apagar_led", "leer_sensor", "ultimo_registro" o "desconocido".
-    - "respuesta": un texto amigable en español respondiendo al usuario o confirmando la acción realizada.
+    Eres el asistente experto del sistema IoT y Visión por Computador VIPIS (Vía Parque Isla de Salamanca).
+    Tu labor es doble:
+    1. Interpretar órdenes de control y lectura para retornar un JSON con formato:
+    - "accion": "encender_led", "apagar_led", "leer_sensor", "ultimo_registro" o "desconocido".
+    - "respuesta": texto amigable confirmando la acción o respondiendo de forma experta a cualquier duda sobre el circuito, ESP32, sensores (eCO2, TVOC, temperatura, humedad), arquitectura (FastAPI, Neon, InfluxDB, YOLO) y componentes del proyecto.
+    Si el usuario hace una pregunta conceptual o técnica sobre el circuito, responde detalladamente en el campo "respuesta" y pon "accion": "desconocido".
     """
     
     try:
