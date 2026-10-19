@@ -201,17 +201,37 @@ def cambiar_estado_led(comando: ComandoLED, db: Session = Depends(get_db)):
 async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
     prompt_usuario = mensaje.texto
     
-    system_instruction = """
+    # Intentamos buscar el último registro del sensor de forma preventiva para dárselo como contexto a la IA
+    datos_sensor_str = "No hay mediciones registradas."
+    try:
+        query_db = text("""
+            SELECT m.fecha_hora,
+            MAX(CASE WHEN v.tipo_medicion_id = 1 THEN v.valor END) AS eco2,
+            MAX(CASE WHEN v.tipo_medicion_id = 2 THEN v.valor END) AS tvoc,
+            MAX(CASE WHEN v.tipo_medicion_id = 3 THEN v.valor END) AS temperatura,
+            MAX(CASE WHEN v.tipo_medicion_id = 4 THEN v.valor END) AS humedad
+            FROM mediciones m
+            JOIN valores_medicion v ON v.medicion_id = m.id
+            GROUP BY m.id, m.fecha_hora
+            ORDER BY m.fecha_hora DESC
+            LIMIT 1;
+        """)
+        res = db.execute(query_db).fetchone()
+        if res:
+            datos_sensor_str = f"eCO₂: {res.eco2 or 0} ppm, TVOC: {res.tvoc or 0} ppb, Temperatura: {res.temperatura or 0}°C, Humedad: {res.humedad or 0}%"
+    except Exception:
+        pass
+
+    system_instruction = f"""
     Eres el asistente experto del sistema IoT y Visión por Computador VIPIS (Vía Parque Isla de Salamanca).
-    Tu labor es doble:
-    1. Interpretar órdenes de control y lectura para retornar un JSON con formato:
-    - "accion": "encender_led", "apagar_led", "leer_sensor", "ultimo_registro" o "desconocido".
-    - "respuesta": texto amigable confirmando la acción o respondiendo de forma experta a cualquier duda sobre el circuito, ESP32, sensores (eCO2, TVOC, temperatura, humedad), arquitectura (FastAPI, Neon, InfluxDB, YOLO) y componentes del proyecto.
-    Si el usuario hace una pregunta conceptual o técnica sobre el circuito, responde detalladamente en el campo "respuesta" y pon "accion": "desconocido".
+    Aquí tienes el contexto del último registro de los sensores en tiempo real: [{datos_sensor_str}].
+    
+    Analiza la orden del usuario y responde ÚNICAMENTE en formato JSON plano con dos campos exactos:
+    - "accion": elige estrictamente entre "encender_led", "apagar_led", "leer_sensor", "ultimo_registro" o "desconocido".
+    - "respuesta": un texto amigable, completo y detallado en español respondiendo al usuario. Si pregunta por los valores del sensor o su significado, usa los datos del contexto proporcionado y explica detalladamente qué significan.
     """
     
     try:
-        # Llamada a Google GenAI (Gemini)
         response = client.models.generate_content(
             model='gemini-3.8-flash',
             contents=prompt_usuario,
@@ -224,7 +244,7 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
         resultado = json.loads(response.text)
         accion = resultado.get("accion")
         
-        # Si la IA determina que hay que encender o apagar el LED...
+        # Si la orden es de LED, ejecutamos el cambio físico en Neon
         if accion in ["encender_led", "apagar_led"]:
             estado_clean = "on" if accion == "encender_led" else "off"
             try:
@@ -233,36 +253,6 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
                 db.commit()
             except Exception:
                 db.rollback()
-                
-        # Si la IA pide el último registro o leer el sensor, consultamos la BD en Neon para traer los datos reales
-        elif accion in ["ultimo_registro", "leer_sensor"]:
-            try:
-                query_db = text("""
-                    SELECT m.fecha_hora,
-                           MAX(CASE WHEN v.tipo_medicion_id = 1 THEN v.valor END) AS eco2,
-                           MAX(CASE WHEN v.tipo_medicion_id = 2 THEN v.valor END) AS tvoc,
-                           MAX(CASE WHEN v.tipo_medicion_id = 3 THEN v.valor END) AS temperatura,
-                           MAX(CASE WHEN v.tipo_medicion_id = 4 THEN v.valor END) AS humedad
-                    FROM mediciones m
-                    JOIN valores_medicion v ON v.medicion_id = m.id
-                    GROUP BY m.id, m.fecha_hora
-                    ORDER BY m.fecha_hora DESC
-                    LIMIT 1;
-                """)
-                res = db.execute(query_db).fetchone()
-                if res:
-                    eco2 = res.eco2 or 0
-                    tvoc = res.tvoc or 0
-                    temp = res.temperatura or 0
-                    hum = res.humedad or 0
-                    resultado["respuesta"] = (
-                        f"El último registro del sistema indica: eCO₂: {eco2} ppm, "
-                        f"TVOC: {tvoc} ppb, Temperatura: {temp}°C y Humedad: {hum}%."
-                    )
-                else:
-                    resultado["respuesta"] = "No hay mediciones registradas en el sistema actualmente."
-            except Exception as db_err:
-                resultado["respuesta"] = f"Se detectó la intención de consultar el sensor, pero hubo un error al consultar la base de datos: {str(db_err)}"
             
         return resultado
         
