@@ -8,3 +8,4 @@ requests
 influxdb3-python
 httpx
 pandas
+google-genai

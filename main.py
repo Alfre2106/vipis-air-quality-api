@@ -7,6 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from pydantic import BaseModel
+from google import genai
+from google.genai import types
+import json
 
 # Importaciones locales
 from database import get_db, get_influx_client
@@ -44,9 +47,19 @@ app.add_middleware(
 )
 
 
-# Modelo Pydantic para el control del LED
+# Modelo Pydantic para el control del LED y Chat
 class ComandoLED(BaseModel):
     estado: str
+
+class MensajeChat(BaseModel):
+    texto: str
+
+
+# ============================================================
+# INICIALIZACIÓN DE GEMINI CON DOBLE RESPALDO (Variables de entorno + Clave directa)
+# ============================================================
+api_key_gemini = os.getenv("GEMINI_API_KEY")
+client = genai.Client()
 
 
 # ============================================================
@@ -173,6 +186,55 @@ def cambiar_estado_led(comando: ComandoLED, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al guardar estado: {str(e)}")
+
+
+# ============================================================
+# CHAT CON IA (PUNTO 4 - GOOGLE GEMINI)
+# ============================================================
+
+@app.post(
+    "/chat",
+    tags=["chat_ia"],
+    summary="Chat con IA para control y consultas (Punto 4)",
+    description="Interpreta órdenes en lenguaje natural usando Gemini para accionar el LED o responder consultas."
+)
+async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
+    prompt_usuario = mensaje.texto
+    
+    system_instruction = """
+    Eres el asistente virtual del sistema IoT VIPIS. Analiza la orden del usuario y responde ÚNICAMENTE en formato JSON plano con dos campos exactos:
+    - "accion": elige estrictamente entre "encender_led", "apagar_led", "leer_sensor", "ultimo_registro" o "desconocido".
+    - "respuesta": un texto amigable en español respondiendo al usuario o confirmando la acción realizada.
+    """
+    
+    try:
+        # Llamada a Google GenAI (Gemini)
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt_usuario,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                response_mime_type="application/json",
+            ),
+        )
+        
+        resultado = json.loads(response.text)
+        accion = resultado.get("accion")
+        
+        # Si la IA determina que hay que encender o apagar el LED, guardamos el comando en Neon automáticamente
+        if accion in ["encender_led", "apagar_led"]:
+            estado_clean = "on" if accion == "encender_led" else "off"
+            try:
+                query = text("INSERT INTO comandos_led (estado) VALUES (:estado);")
+                db.execute(query, {"estado": estado_clean})
+                db.commit()
+            except Exception:
+                db.rollback()
+            
+        return resultado
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================
