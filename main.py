@@ -189,7 +189,7 @@ def cambiar_estado_led(comando: ComandoLED, db: Session = Depends(get_db)):
 
 
 # ============================================================
-# CHAT CON IA (PUNTO 4 - GOOGLE GEMINI)
+# CHAT CON IA (PUNTO 4 - GOOGLE GEMINI CON RESPALDO BLINDADO)
 # ============================================================
 
 @app.post(
@@ -227,7 +227,6 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
     except Exception:
         pass
 
-    # Instrucción clara y directa centrada en la rúbrica del parcial
     system_instruction = f"""
     Eres el asistente virtual experto del sistema IoT VIPIS (Vía Parque Isla de Salamanca).
     Tienes el contexto actual de los sensores: [{datos_sensor_str}].
@@ -238,17 +237,17 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
         * "encender_led" (si el usuario pide prender, encender o iluminar cualquier variante de luz/led).
         * "apagar_led" (si el usuario pide apagar o apagar la luz/led).
         * "ultimo_registro" (si pregunta por el estado del aire, mediciones, temperatura o humedad).
-        * "desconocido" (solo si no tiene relación con el sistema).
+        * "desconocido" (si es una pregunta teórica, un saludo o no tiene relación directa con el hardware).
     - "respuesta": Un texto redactado en español, sumamente amigable, natural y detallado. 
       * Si la acción es "encender_led", redacta algo como: "¡Entendido! He enviado la orden para encender el LED del sistema."
       * Si la acción es "apagar_led", redacta algo como: "Claro que sí, he procedido a apagar el LED del dispositivo."
-      * Si pregunta por los sensores, detalla los valores y explica qué significan.
+      * Si pregunta por los sensores, detalla los valores actuales y explica qué significan.
     NUNCA devuelvas frases vacías como 'Operación procesada con éxito'; redacta siempre una respuesta conversacional de IA.
     """
     
     try:
         response = client.models.generate_content(
-            model='gemini-3.8-flash',
+            model='gemini-2.5-flash',
             contents=prompt_usuario,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
@@ -258,6 +257,19 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
         
         resultado = json.loads(response.text)
         accion = resultado.get("accion")
+        respuesta_ia = resultado.get("respuesta", "").strip()
+
+        # Red de seguridad si Gemini llega a omitir el texto de respuesta
+        if not respuesta_ia:
+            if accion == "encender_led":
+                respuesta_ia = "¡Entendido! He enviado la orden para encender el LED del sistema."
+            elif accion == "apagar_led":
+                respuesta_ia = "Claro que sí, he procedido a apagar el LED del dispositivo."
+            elif accion == "ultimo_registro":
+                respuesta_ia = f"El registro más reciente de los sensores en el parque es: {datos_sensor_str}."
+            else:
+                respuesta_ia = "He procesado tu solicitud en el sistema VIPIS correctamente."
+            resultado["respuesta"] = respuesta_ia
         
         # Si la intención es encender o apagar el LED, guardamos el estado en Neon
         if accion in ["encender_led", "apagar_led"]:
@@ -272,7 +284,52 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
         return resultado
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error en Gemini (activando respaldo local): {str(e)}")
+        
+        texto_lower = prompt_usuario.lower()
+        
+        # 1. Intención de Encender LED
+        if any(w in texto_lower for w in ["enciend", "prend", "luz", "led", "foco"]):
+            accion = "encender_led"
+            respuesta_ia = "¡Entendido! He enviado la orden para encender el LED del sistema (Modo Respaldo)."
+            estado_clean = "on"
+            
+        # 2. Intención de Apagar LED
+        elif any(w in texto_lower for w in ["apag", "apagues"]):
+            accion = "apagar_led"
+            respuesta_ia = "Claro que sí, he procedido a apagar el LED del dispositivo (Modo Respaldo)."
+            estado_clean = "off"
+            
+        # 3. Intención de Sensores o Calidad del Aire
+        elif any(w in texto_lower for w in ["aire", "sensor", "eco2", "tvoc", "temperatura", "humedad", "registro", "medicion", "como esta"]):
+            accion = "ultimo_registro"
+            respuesta_ia = f"Según el monitoreo actual en la Vía Parque Isla de Salamanca, los valores registrados son: {datos_sensor_str}."
+            
+        # 4. Preguntas técnicas o teóricas sobre el proyecto VIPIS
+        elif any(w in texto_lower for w in ["arquitectura", "api", "render", "neon", "esp32", "thingspeak", "como funciona", "proyecto"]):
+            accion = "desconocido"
+            respuesta_ia = "El sistema VIPIS integra un ESP32 con sensores AHT21 y ENS160, telemetría hacia ThingSpeak, un backend en FastAPI con base de datos Neon PostgreSQL y un modelo de IA."
+            
+        # 5. Cualquier otra consulta general
+        else:
+            accion = "desconocido"
+            respuesta_ia = f"Entiendo tu consulta sobre el sistema VIPIS. Actualmente los sensores reportan: {datos_sensor_str}. ¿Te gustaría realizar alguna acción con el actuador?"
+
+        # Guardar en Neon si fue una orden de LED en modo respaldo
+        if accion in ["encender_led", "apagar_led"]:
+            try:
+                query = text("INSERT INTO comandos_led (estado) VALUES (:estado);")
+                db.execute(query, {"estado": estado_clean})
+                db.commit()
+            except Exception:
+                db.rollback()
+
+        return {
+            "accion": accion,
+            "respuesta": respuesta_ia
+        }
+
+
 # ============================================================
 # CONSULTAS SQL COMPLEJAS Y ESTADÍSTICAS (PUNTO 1 Y MENÚ LCD)
 # ============================================================
