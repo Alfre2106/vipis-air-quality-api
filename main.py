@@ -230,12 +230,41 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
                 db.commit()
             except Exception:
                 db.rollback()
+                
+        # Si la IA pide el último registro o leer el sensor, consultamos la BD en Neon para traer los datos reales
+        elif accion in ["ultimo_registro", "leer_sensor"]:
+            try:
+                query_db = text("""
+                    SELECT m.fecha_hora,
+                           MAX(CASE WHEN v.tipo_medicion_id = 1 THEN v.valor END) AS eco2,
+                           MAX(CASE WHEN v.tipo_medicion_id = 2 THEN v.valor END) AS tvoc,
+                           MAX(CASE WHEN v.tipo_medicion_id = 3 THEN v.valor END) AS temperatura,
+                           MAX(CASE WHEN v.tipo_medicion_id = 4 THEN v.valor END) AS humedad
+                    FROM mediciones m
+                    JOIN valores_medicion v ON v.medicion_id = m.id
+                    GROUP BY m.id, m.fecha_hora
+                    ORDER BY m.fecha_hora DESC
+                    LIMIT 1;
+                """)
+                res = db.execute(query_db).fetchone()
+                if res:
+                    eco2 = res.eco2 or 0
+                    tvoc = res.tvoc or 0
+                    temp = res.temperatura or 0
+                    hum = res.humedad or 0
+                    resultado["respuesta"] = (
+                        f"El último registro del sistema indica: eCO₂: {eco2} ppm, "
+                        f"TVOC: {tvoc} ppb, Temperatura: {temp}°C y Humedad: {hum}%."
+                    )
+                else:
+                    resultado["respuesta"] = "No hay mediciones registradas en el sistema actualmente."
+            except Exception as db_err:
+                resultado["respuesta"] = f"Se detectó la intención de consultar el sensor, pero hubo un error al consultar la base de datos: {str(db_err)}"
             
         return resultado
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 # ============================================================
 # CONSULTAS SQL COMPLEJAS Y ESTADÍSTICAS (PUNTO 1 Y MENÚ LCD)
 # ============================================================
