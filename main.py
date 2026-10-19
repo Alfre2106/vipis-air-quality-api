@@ -229,12 +229,21 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
 
     # Instrucción clara y directa centrada en la rúbrica del parcial
     system_instruction = f"""
-    Eres el asistente virtual del sistema IoT VIPIS. 
-    Contexto actual de los sensores del sistema: [{datos_sensor_str}].
+    Eres el asistente virtual experto del sistema IoT VIPIS (Vía Parque Isla de Salamanca).
+    Tienes el contexto actual de los sensores: [{datos_sensor_str}].
     
-    Analiza la orden del usuario y responde ÚNICAMENTE en formato JSON plano con dos campos exactos:
-    - "accion": elige estrictamente entre "encender_led", "apagar_led", "leer_sensor", "ultimo_registro" o "desconocido".
-    - "respuesta": un texto amigable en español respondiendo al usuario, confirmando la acción realizada, o informando los valores actuales del sensor si lo solicita.
+    Analiza la intención del usuario (comprende cualquier sinónimo como prender, encender, apagar, luz, led, foco, aire, sensores, registros).
+    Debes responder ÚNICAMENTE en formato JSON plano con dos campos exactos:
+    - "accion": 
+        * "encender_led" (si el usuario pide prender, encender o iluminar cualquier variante de luz/led).
+        * "apagar_led" (si el usuario pide apagar o apagar la luz/led).
+        * "ultimo_registro" (si pregunta por el estado del aire, mediciones, temperatura o humedad).
+        * "desconocido" (solo si no tiene relación con el sistema).
+    - "respuesta": Un texto redactado en español, sumamente amigable, natural y detallado. 
+      * Si la acción es "encender_led", redacta algo como: "¡Entendido! He enviado la orden para encender el LED del sistema."
+      * Si la acción es "apagar_led", redacta algo como: "Claro que sí, he procedido a apagar el LED del dispositivo."
+      * Si pregunta por los sensores, detalla los valores y explica qué significan.
+    NUNCA devuelvas frases vacías como 'Operación procesada con éxito'; redacta siempre una respuesta conversacional de IA.
     """
     
     try:
