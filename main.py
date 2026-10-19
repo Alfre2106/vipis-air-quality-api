@@ -210,7 +210,7 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
     try:
         # Llamada a Google GenAI (Gemini)
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-2.0-flash',
             contents=prompt_usuario,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
