@@ -209,8 +209,8 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
     
     try:
         # Llamada a Google GenAI (Gemini)
-       response = client.models.generate_content(
-            model='gemini-3.8-flash',  # <-- Actualízalo aquí
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
             contents=prompt_usuario,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
@@ -221,7 +221,7 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
         resultado = json.loads(response.text)
         accion = resultado.get("accion")
         
-        # Si la IA determina que hay que encender o apagar el LED, guardamos el comando en Neon automáticamente
+        # Si la IA determina que hay que encender o apagar el LED...
         if accion in ["encender_led", "apagar_led"]:
             estado_clean = "on" if accion == "encender_led" else "off"
             try:
@@ -235,7 +235,6 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # ============================================================
 # CONSULTAS SQL COMPLEJAS Y ESTADÍSTICAS (PUNTO 1 Y MENÚ LCD)
