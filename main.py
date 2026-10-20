@@ -246,7 +246,7 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
     
     try:
         response = client.models.generate_content(
-            model='gemini-2.0-flash', # <--- Usar este modelo estable
+            model='gemini-3.8-flash', # <--- Usar el modelo que exige Google
             contents=prompt_usuario,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
