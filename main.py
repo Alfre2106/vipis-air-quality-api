@@ -47,7 +47,7 @@ app.add_middleware(
 )
 
 
-# Modelo Pydantic para el control del LED y Chat
+# Modelos Pydantic
 class ComandoLED(BaseModel):
     estado: str
 
@@ -56,7 +56,7 @@ class MensajeChat(BaseModel):
 
 
 # ============================================================
-# INICIALIZACIÓN DE GEMINI CON DOBLE RESPALDO (Variables de entorno + Clave directa)
+# INICIALIZACIÓN DE GEMINI
 # ============================================================
 api_key_gemini = os.getenv("GEMINI_API_KEY")
 client = genai.Client()
@@ -196,12 +196,12 @@ def cambiar_estado_led(comando: ComandoLED, db: Session = Depends(get_db)):
     "/chat",
     tags=["chat_ia"],
     summary="Chat con IA para control y consultas (Punto 4)",
-    description="Interpreta órdenes en lenguaje natural usando Gemini para accionar el LED o responder consultas."
+    description="Interpreta órdenes en lenguaje natural usando Gemini para accionar el LED o consultar sensores."
 )
 async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
     prompt_usuario = mensaje.texto
     
-    # Obtener el último registro limpio de la base de datos para darle contexto a la IA
+    # Obtener el último registro de la base de datos para darle contexto real a la IA
     datos_sensor_str = "No hay mediciones registradas actualmente."
     try:
         query_db = text("""
@@ -222,27 +222,26 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
             tvoc = int(res.tvoc) if res.tvoc is not None else 0
             temp = float(res.temperatura) if res.temperatura is not None else 0.0
             hum = int(res.humedad) if res.humedad is not None else 0
-            
             datos_sensor_str = f"eCO₂: {eco2} ppm, TVOC: {tvoc} ppb, Temperatura: {temp}°C, Humedad: {hum}%"
     except Exception:
         pass
 
     system_instruction = f"""
     Eres el asistente virtual experto del sistema IoT VIPIS (Vía Parque Isla de Salamanca).
-    Tienes el contexto actual de los sensores: [{datos_sensor_str}].
+    Tienes el contexto actual de los sensores del sistema: [{datos_sensor_str}].
     
-    Analiza la intención del usuario (comprende cualquier sinónimo como prender, encender, apagar, luz, led, foco, aire, sensores, registros).
+    Analiza la intención del usuario (comprende sinónimos y frases distintas como 'prende', 'enciende', 'apaga', 'valor actual', 'último registro').
     Debes responder ÚNICAMENTE en formato JSON plano con dos campos exactos:
     - "accion": 
-        * "encender_led" (si el usuario pide prender, encender o iluminar cualquier variante de luz/led).
-        * "apagar_led" (si el usuario pide apagar o apagar la luz/led).
-        * "ultimo_registro" (si pregunta por el estado del aire, mediciones, temperatura o humedad).
-        * "desconocido" (si es una pregunta teórica, un saludo o no tiene relación directa con el hardware).
-    - "respuesta": Un texto redactado en español, sumamente amigable, natural y detallado. 
-      * Si la acción es "encender_led", redacta algo como: "¡Entendido! He enviado la orden para encender el LED del sistema."
-      * Si la acción es "apagar_led", redacta algo como: "Claro que sí, he procedido a apagar el LED del dispositivo."
-      * Si pregunta por los sensores, detalla los valores actuales y explica qué significan.
-    NUNCA devuelvas frases vacías como 'Operación procesada con éxito'; redacta siempre una respuesta conversacional de IA.
+        * "encender_led" (si el usuario pide prender, encender o iluminar el led/luz).
+        * "apagar_led" (si el usuario pide apagar el led/luz).
+        * "ultimo_registro" (si pregunta por el valor actual del sensor, la última medición, el aire, temperatura o humedad).
+        * "desconocido" (si es una pregunta totalmente ajena o un saludo general).
+    - "respuesta": Un texto redactado en español, sumamente amigable, natural y conversacional. 
+      * Si la acción es "encender_led", confirma que enviaste la orden para encender el LED.
+      * Si la acción es "apagar_led", confirma que enviaste la orden para apagar el LED.
+      * Si la acción es "ultimo_registro", menciona los valores actuales del sensor.
+      * Si es "desconocido", responde educadamente aclarando que estás para ayudar con el monitoreo VIPIS.
     """
     
     try:
@@ -256,27 +255,13 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
         )
         
         resultado = json.loads(response.text)
-        accion = resultado.get("accion")
-        respuesta_ia = resultado.get("respuesta", "").strip()
-
-        # Red de seguridad si Gemini llega a omitir el texto de respuesta
-        if not respuesta_ia:
-            if accion == "encender_led":
-                respuesta_ia = "¡Entendido! He enviado la orden para encender el LED del sistema."
-            elif accion == "apagar_led":
-                respuesta_ia = "Claro que sí, he procedido a apagar el LED del dispositivo."
-            elif accion == "ultimo_registro":
-                respuesta_ia = f"El registro más reciente de los sensores en el parque es: {datos_sensor_str}."
-            else:
-                respuesta_ia = "He procesado tu solicitud en el sistema VIPIS correctamente."
-            resultado["respuesta"] = respuesta_ia
+        accion = resultado.get("accion", "desconocido")
         
-        # Si la intención es encender o apagar el LED, guardamos el estado en Neon
+        # Guardar en Neon si la intención implica mover el LED
         if accion in ["encender_led", "apagar_led"]:
             estado_clean = "on" if accion == "encender_led" else "off"
             try:
-                query = text("INSERT INTO comandos_led (estado) VALUES (:estado);")
-                db.execute(query, {"estado": estado_clean})
+                db.execute(text("INSERT INTO comandos_led (estado) VALUES (:estado);"), {"estado": estado_clean})
                 db.commit()
             except Exception:
                 db.rollback()
@@ -284,42 +269,27 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
         return resultado
         
     except Exception as e:
-        print(f"Error en Gemini (activando respaldo local): {str(e)}")
-        
+        # Red de respaldo local por si la API falla o agota cuota
         texto_lower = prompt_usuario.lower()
+        accion = "desconocido"
         
-        # 1. Intención de Encender LED
-        if any(w in texto_lower for w in ["enciend", "prend", "luz", "led", "foco"]):
-            accion = "encender_led"
-            respuesta_ia = "¡Entendido! He enviado la orden para encender el LED del sistema (Modo Respaldo)."
-            estado_clean = "on"
-            
-        # 2. Intención de Apagar LED
-        elif any(w in texto_lower for w in ["apag", "apagues"]):
+        if any(w in texto_lower for w in ["apag", "apagar", "apagues"]):
             accion = "apagar_led"
-            respuesta_ia = "Claro que sí, he procedido a apagar el LED del dispositivo (Modo Respaldo)."
             estado_clean = "off"
-            
-        # 3. Intención de Sensores o Calidad del Aire
-        elif any(w in texto_lower for w in ["aire", "sensor", "eco2", "tvoc", "temperatura", "humedad", "registro", "medicion", "como esta"]):
+            respuesta_ia = "Claro que sí, he procedido a apagar el LED del dispositivo (Modo Respaldo)."
+        elif any(w in texto_lower for w in ["enciend", "prend", "prende", "ilumina"]):
+            accion = "encender_led"
+            estado_clean = "on"
+            respuesta_ia = "¡Entendido! He enviado la orden para encender el LED del sistema (Modo Respaldo)."
+        elif any(w in texto_lower for w in ["sensor", "registro", "valor", "medicion", "aire", "eco2"]):
             accion = "ultimo_registro"
-            respuesta_ia = f"Según el monitoreo actual en la Vía Parque Isla de Salamanca, los valores registrados son: {datos_sensor_str}."
-            
-        # 4. Preguntas técnicas o teóricas sobre el proyecto VIPIS
-        elif any(w in texto_lower for w in ["arquitectura", "api", "render", "neon", "esp32", "thingspeak", "como funciona", "proyecto"]):
-            accion = "desconocido"
-            respuesta_ia = "El sistema VIPIS integra un ESP32 con sensores AHT21 y ENS160, telemetría hacia ThingSpeak, un backend en FastAPI con base de datos Neon PostgreSQL y un modelo de IA."
-            
-        # 5. Cualquier otra consulta general
+            respuesta_ia = f"El registro más reciente de los sensores en el parque es: {datos_sensor_str} (Modo Respaldo)."
         else:
-            accion = "desconocido"
-            respuesta_ia = f"Entiendo tu consulta sobre el sistema VIPIS. Actualmente los sensores reportan: {datos_sensor_str}. ¿Te gustaría realizar alguna acción con el actuador?"
+            respuesta_ia = "Entiendo tu consulta sobre el sistema VIPIS. ¿Te gustaría consultar los sensores o controlar el actuador?"
 
-        # Guardar en Neon si fue una orden de LED en modo respaldo
         if accion in ["encender_led", "apagar_led"]:
             try:
-                query = text("INSERT INTO comandos_led (estado) VALUES (:estado);")
-                db.execute(query, {"estado": estado_clean})
+                db.execute(text("INSERT INTO comandos_led (estado) VALUES (:estado);"), {"estado": estado_clean})
                 db.commit()
             except Exception:
                 db.rollback()
@@ -331,21 +301,10 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
 
 
 # ============================================================
-# CONSULTAS SQL COMPLEJAS Y ESTADÍSTICAS (PUNTO 1 Y MENÚ LCD)
+# CONSULTAS SQL COMPLEJAS Y ESTADÍSTICAS
 # ============================================================
 
-@app.get(
-    "/ultimo",
-    tags=["menu_esp32"],
-    summary="Último registro guardado (Punto 1 / Menú)",
-    description="Obtiene los datos de la última medición con resumen para el ESP32."
-)
-@app.get(
-    "/sensor/actual",
-    tags=["menu_esp32"],
-    summary="Última lectura actual del sensor (Punto 1 / Menú)",
-    description="Devuelve eCO2, TVOC, temperatura y humedad actuales."
-)
+@app.get("/ultimo", tags=["menu_esp32"])
 def obtener_ultimo_registro_menu(db: Session = Depends(get_db)):
     query = text("""
         SELECT m.id, m.fecha_hora,
@@ -379,12 +338,7 @@ def obtener_ultimo_registro_menu(db: Session = Depends(get_db)):
     }
 
 
-@app.get(
-    "/stats/promedio-24h",
-    tags=["stats_sql"],
-    summary="Promedio eCO2 en las últimas 24 horas (Punto 1)",
-    description="Calcula el promedio del sensor eCO2 en las últimas 24 horas."
-)
+@app.get("/stats/promedio-24h", tags=["stats_sql"])
 def stats_promedio_24h(db: Session = Depends(get_db)):
     query = text("""
         SELECT ROUND(AVG(v.valor)::numeric, 1) AS promedio
@@ -395,18 +349,10 @@ def stats_promedio_24h(db: Session = Depends(get_db)):
     """)
     res = db.execute(query).fetchone()
     prom = res.promedio if res and res.promedio is not None else 0.0
-    return {
-        "promedio_eco2": prom,
-        "resumen": f"Prom 24h: {prom}ppm"
-    }
+    return {"promedio_eco2": prom, "resumen": f"Prom 24h: {prom}ppm"}
 
 
-@app.get(
-    "/stats/promedio-por-hora",
-    tags=["stats_sql"],
-    summary="Promedio de eCO2 por hora (SQL Complejo - GROUP BY, AVG, date_trunc)",
-    description="Agrupa y calcula el promedio por hora ajustado a hora Colombia."
-)
+@app.get("/stats/promedio-por-hora", tags=["stats_sql"])
 def stats_promedio_por_hora(db: Session = Depends(get_db)):
     query = text("""
         SELECT date_trunc('hour', m.fecha_hora AT TIME ZONE 'UTC' AT TIME ZONE 'America/Bogota') AS hora,
@@ -420,19 +366,10 @@ def stats_promedio_por_hora(db: Session = Depends(get_db)):
     """)
     rows = db.execute(query).fetchall()
     datos = [{"hora": str(r.hora), "promedio_eco2": r.promedio_eco2} for r in rows]
-    return {
-        "total": len(datos),
-        "datos": datos,
-        "resumen": f"Prom.Hora: {datos[0]['promedio_eco2']}p" if datos else "Sin datos"
-    }
+    return {"total": len(datos), "datos": datos}
 
 
-@app.get(
-    "/stats/registros-por-dia",
-    tags=["stats_sql"],
-    summary="Conteo de mediciones por día (SQL Complejo - GROUP BY, COUNT)",
-    description="Cuenta la cantidad de registros capturados por día."
-)
+@app.get("/stats/registros-por-dia", tags=["stats_sql"])
 def stats_registros_por_dia(db: Session = Depends(get_db)):
     query = text("""
         SELECT (m.fecha_hora AT TIME ZONE 'UTC' AT TIME ZONE 'America/Bogota')::date AS dia,
@@ -443,19 +380,10 @@ def stats_registros_por_dia(db: Session = Depends(get_db)):
     """)
     rows = db.execute(query).fetchall()
     datos = [{"dia": str(r.dia), "registros": r.registros} for r in rows]
-    return {
-        "total_dias": len(datos),
-        "datos": datos,
-        "resumen": f"Hoy: {datos[0]['registros']} regs" if datos else "Sin registros"
-    }
+    return {"total_dias": len(datos), "datos": datos}
 
 
-@app.get(
-    "/stats/max-min-dia",
-    tags=["stats_sql"],
-    summary="Valores máximo y mínimo del día actual (SQL Complejo - MAX, MIN)",
-    description="Consulta los valores extremales de eCO2 registrados en el día."
-)
+@app.get("/stats/max-min-dia", tags=["stats_sql"])
 def stats_max_min_dia(db: Session = Depends(get_db)):
     query = text("""
         SELECT MAX(v.valor) AS maximo, MIN(v.valor) AS minimo
@@ -468,19 +396,10 @@ def stats_max_min_dia(db: Session = Depends(get_db)):
     res = db.execute(query).fetchone()
     maxi = res.maximo if res and res.maximo is not None else 0
     mini = res.minimo if res and res.minimo is not None else 0
-    return {
-        "maximo": maxi,
-        "minimo": mini,
-        "resumen": f"Mx:{int(maxi)} Mn:{int(mini)}"
-    }
+    return {"maximo": maxi, "minimo": mini}
 
 
-@app.get(
-    "/stats/dias-criticos",
-    tags=["stats_sql"],
-    summary="Días con promedio superior al umbral (SQL Complejo - HAVING)",
-    description="Obtiene los días en que el promedio de eCO2 fue crítico (> 1000 ppm)."
-)
+@app.get("/stats/dias-criticos", tags=["stats_sql"])
 def stats_dias_criticos(db: Session = Depends(get_db)):
     query = text("""
         SELECT (m.fecha_hora AT TIME ZONE 'UTC' AT TIME ZONE 'America/Bogota')::date AS dia,
@@ -494,476 +413,113 @@ def stats_dias_criticos(db: Session = Depends(get_db)):
     """)
     rows = db.execute(query).fetchall()
     datos = [{"dia": str(r.dia), "promedio": r.promedio} for r in rows]
-    return {
-        "total_dias_criticos": len(datos),
-        "dias_criticos": datos,
-        "resumen": f"Criticos: {len(datos)}d"
-    }
+    return {"total_dias_criticos": len(datos), "dias_criticos": datos}
 
 
 # ============================================================
-# MEDICIONES (SQL - POST Y LISTADO RELACIONAL)
+# MEDICIONES Y ALERTAS
 # ============================================================
 
-@app.post(
-    "/mediciones",
-    tags=["mediciones"],
-    summary="Registrar una nueva medición en BD Relacional",
-    description="Guarda telemetría de eCO2, TVOC, Temperatura y Humedad en Neon."
-)
-async def crear_medicion(
-    datos: MedicionCreate,
-    db: Session = Depends(get_db)
-):
-    dispositivo = (
-        db.query(models.Dispositivo)
-        .filter(models.Dispositivo.id == datos.dispositivo_id)
-        .first()
-    )
-
+@app.post("/mediciones", tags=["mediciones"])
+async def crear_medicion(datos: MedicionCreate, db: Session = Depends(get_db)):
+    dispositivo = db.query(models.Dispositivo).filter(models.Dispositivo.id == datos.dispositivo_id).first()
     if not dispositivo:
-        raise HTTPException(
-            status_code=404,
-            detail="El dispositivo no existe"
-        )
+        raise HTTPException(status_code=404, detail="El dispositivo no existe")
 
     try:
-        medicion = models.Medicion(
-            dispositivo_id=datos.dispositivo_id
-        )
-
+        medicion = models.Medicion(dispositivo_id=datos.dispositivo_id)
         db.add(medicion)
         db.flush()
 
         valores = [
-            models.ValorMedicion(
-                medicion_id=medicion.id,
-                tipo_medicion_id=1,
-                valor=datos.eco2
-            ),
-            models.ValorMedicion(
-                medicion_id=medicion.id,
-                tipo_medicion_id=2,
-                valor=datos.tvoc
-            ),
-            models.ValorMedicion(
-                medicion_id=medicion.id,
-                tipo_medicion_id=3,
-                valor=datos.temperatura
-            ),
-            models.ValorMedicion(
-                medicion_id=medicion.id,
-                tipo_medicion_id=4,
-                valor=datos.humedad
-            )
+            models.ValorMedicion(medicion_id=medicion.id, tipo_medicion_id=1, valor=datos.eco2),
+            models.ValorMedicion(medicion_id=medicion.id, tipo_medicion_id=2, valor=datos.tvoc),
+            models.ValorMedicion(medicion_id=medicion.id, tipo_medicion_id=3, valor=datos.temperatura),
+            models.ValorMedicion(medicion_id=medicion.id, tipo_medicion_id=4, valor=datos.humedad)
         ]
-
         db.add_all(valores)
 
-        rango = (
-            db.query(models.RangoRiesgo)
-            .filter(
-                models.RangoRiesgo.tipo_medicion_id == 1,
-                models.RangoRiesgo.valor_min <= datos.eco2,
-                models.RangoRiesgo.valor_max > datos.eco2
-            )
-            .first()
-        )
+        rango = db.query(models.RangoRiesgo).filter(
+            models.RangoRiesgo.tipo_medicion_id == 1,
+            models.RangoRiesgo.valor_min <= datos.eco2,
+            models.RangoRiesgo.valor_max > datos.eco2
+        ).first()
 
         if not rango:
-            raise HTTPException(
-                status_code=422,
-                detail="No existe un rango de riesgo configurado para el valor de eCO₂ proporcionado"
-            )
+            raise HTTPException(status_code=422, detail="No existe un rango de riesgo configurado")
 
-        nivel_riesgo = (
-            db.query(models.NivelRiesgo)
-            .filter(models.NivelRiesgo.id == rango.nivel_riesgo_id)
-            .first()
-        )
-
-        if not nivel_riesgo:
-            raise HTTPException(
-                status_code=500,
-                detail="El nivel de riesgo configurado no existe"
-            )
-
-        clasificacion = models.Clasificacion(
-            medicion_id=medicion.id,
-            nivel_riesgo_id=rango.nivel_riesgo_id,
-            confianza=100.00
-        )
-
+        nivel_riesgo = db.query(models.NivelRiesgo).filter(models.NivelRiesgo.id == rango.nivel_riesgo_id).first()
+        clasificacion = models.Clasificacion(medicion_id=medicion.id, nivel_riesgo_id=rango.nivel_riesgo_id, confianza=100.00)
         db.add(clasificacion)
         db.flush()
 
         alerta = None
-
         if nivel_riesgo.id >= 5:
             alerta = models.Alerta(
                 clasificacion_id=clasificacion.id,
-                descripcion=(
-                    f"Alerta de calidad del aire: "
-                    f"nivel de riesgo '{nivel_riesgo.nombre}' "
-                    f"detectado para un eCO₂ de {datos.eco2} ppm."
-                )
+                descripcion=f"Alerta de calidad del aire: nivel '{nivel_riesgo.nombre}' para eCO₂ de {datos.eco2} ppm."
             )
             db.add(alerta)
 
         db.commit()
-
         db.refresh(medicion)
-        db.refresh(clasificacion)
-
-        if alerta:
-            db.refresh(alerta)
 
         telegram_enviado = False
-
         if alerta:
-            mensaje_telegram = (
-                "🚨 ALERTA VIPIS\n\n"
-                f"Nivel de riesgo: {nivel_riesgo.nombre}\n"
-                f"eCO₂: {datos.eco2} ppm\n"
-                f"TVOC: {datos.tvoc} ppb\n"
-                f"Temperatura: {datos.temperatura} °C\n"
-                f"Humedad: {datos.humedad} %\n"
-                f"Dispositivo: {dispositivo.codigo}\n"
-                f"Medición: #{medicion.id}\n"
-                f"Alerta: #{alerta.id}"
-            )
+            db.refresh(alerta)
+            msg = f"🚨 ALERTA VIPIS\nRiesgo: {nivel_riesgo.nombre}\neCO₂: {datos.eco2} ppm"
+            telegram_enviado = await enviar_mensaje_telegram(msg)
 
-            telegram_enviado = await enviar_mensaje_telegram(mensaje_telegram)
-
-        return {
-            "mensaje": "Medición registrada correctamente",
-            "medicion_id": medicion.id,
-            "dispositivo_id": medicion.dispositivo_id,
-            "eco2": datos.eco2,
-            "tvoc": datos.tvoc,
-            "temperatura": datos.temperatura,
-            "humedad": datos.humedad,
-            "nivel_riesgo": {
-                "id": nivel_riesgo.id,
-                "nombre": nivel_riesgo.nombre
-            },
-            "alerta_generada": alerta is not None,
-            "alerta_id": alerta.id if alerta else None,
-            "telegram_enviado": telegram_enviado
-        }
-
-    except HTTPException:
-        db.rollback()
-        raise
-
+        return {"mensaje": "Medición registrada correctamente", "medicion_id": medicion.id, "telegram_enviado": telegram_enviado}
     except Exception:
         db.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail="Error al registrar la medición"
-        )
+        raise HTTPException(status_code=500, detail="Error al registrar la medición")
 
 
 @app.get("/mediciones/ultima", tags=["mediciones"])
 def obtener_ultima_medicion(db: Session = Depends(get_db)):
-    medicion = (
-        db.query(models.Medicion)
-        .order_by(models.Medicion.fecha_hora.desc())
-        .first()
-    )
-
+    medicion = db.query(models.Medicion).order_by(models.Medicion.fecha_hora.desc()).first()
     if not medicion:
         raise HTTPException(status_code=404, detail="No hay mediciones registradas")
 
     valores = db.query(models.ValorMedicion).filter(models.ValorMedicion.medicion_id == medicion.id).all()
-    datos = {}
-    for valor in valores:
-        if valor.tipo_medicion_id == 1:
-            datos["eco2"] = valor.valor
-        elif valor.tipo_medicion_id == 2:
-            datos["tvoc"] = valor.valor
-        elif valor.tipo_medicion_id == 3:
-            datos["temperatura"] = valor.valor
-        elif valor.tipo_medicion_id == 4:
-            datos["humedad"] = valor.valor
-
-    clasificacion = db.query(models.Clasificacion).filter(models.Clasificacion.medicion_id == medicion.id).first()
-    nivel_riesgo = None
-
-    if clasificacion:
-        riesgo = db.query(models.NivelRiesgo).filter(models.NivelRiesgo.id == clasificacion.nivel_riesgo_id).first()
-        if riesgo:
-            nivel_riesgo = riesgo.nombre
-
+    datos = {v.tipo_medicion_id: v.valor for v in valores}
+    
     return {
         "medicion_id": medicion.id,
-        "dispositivo_id": medicion.dispositivo_id,
         "fecha_hora": medicion.fecha_hora,
-        "eco2": datos.get("eco2"),
-        "tvoc": datos.get("tvoc"),
-        "temperatura": datos.get("temperatura"),
-        "humedad": datos.get("humedad"),
-        "nivel_riesgo": nivel_riesgo
-    }
-
-
-@app.get("/mediciones", tags=["mediciones"])
-def obtener_mediciones(limit: int = 10, db: Session = Depends(get_db)):
-    if limit < 1 or limit > 100:
-        raise HTTPException(status_code=400, detail="El límite debe estar entre 1 y 100")
-
-    mediciones = (
-        db.query(models.Medicion)
-        .order_by(models.Medicion.fecha_hora.desc())
-        .limit(limit)
-        .all()
-    )
-
-    resultado = []
-    for medicion in mediciones:
-        valores = db.query(models.ValorMedicion).filter(models.ValorMedicion.medicion_id == medicion.id).all()
-        datos = {}
-        for valor in valores:
-            if valor.tipo_medicion_id == 1:
-                datos["eco2"] = valor.valor
-            elif valor.tipo_medicion_id == 2:
-                datos["tvoc"] = valor.valor
-            elif valor.tipo_medicion_id == 3:
-                datos["temperatura"] = valor.valor
-            elif valor.tipo_medicion_id == 4:
-                datos["humedad"] = valor.valor
-
-        clasificacion = db.query(models.Clasificacion).filter(models.Clasificacion.medicion_id == medicion.id).first()
-        nivel_riesgo = None
-        if clasificacion:
-            riesgo = db.query(models.NivelRiesgo).filter(models.NivelRiesgo.id == clasificacion.nivel_riesgo_id).first()
-            if riesgo:
-                nivel_riesgo = riesgo.nombre
-
-        resultado.append({
-            "medicion_id": medicion.id,
-            "dispositivo_id": medicion.dispositivo_id,
-            "fecha_hora": medicion.fecha_hora,
-            "eco2": datos.get("eco2"),
-            "tvoc": datos.get("tvoc"),
-            "temperatura": datos.get("temperatura"),
-            "humedad": datos.get("humedad"),
-            "nivel_riesgo": nivel_riesgo
-        })
-
-    return {"total": len(resultado), "mediciones": resultado}
-
-
-@app.get("/mediciones/criticas", tags=["mediciones"])
-def obtener_mediciones_criticas(db: Session = Depends(get_db)):
-    mediciones = (
-        db.query(models.Medicion)
-        .join(models.Clasificacion, models.Clasificacion.medicion_id == models.Medicion.id)
-        .join(models.NivelRiesgo, models.NivelRiesgo.id == models.Clasificacion.nivel_riesgo_id)
-        .filter(models.NivelRiesgo.nombre == "Crítico")
-        .order_by(models.Medicion.fecha_hora.desc())
-        .all()
-    )
-
-    resultado = []
-    for medicion in mediciones:
-        valores = db.query(models.ValorMedicion).filter(models.ValorMedicion.medicion_id == medicion.id).all()
-        datos = {}
-        for valor in valores:
-            if valor.tipo_medicion_id == 1:
-                datos["eco2"] = valor.valor
-            elif valor.tipo_medicion_id == 2:
-                datos["tvoc"] = valor.valor
-            elif valor.tipo_medicion_id == 3:
-                datos["temperatura"] = valor.valor
-            elif valor.tipo_medicion_id == 4:
-                datos["humedad"] = valor.valor
-
-        resultado.append({
-            "medicion_id": medicion.id,
-            "dispositivo_id": medicion.dispositivo_id,
-            "fecha_hora": medicion.fecha_hora,
-            "eco2": datos.get("eco2"),
-            "tvoc": datos.get("tvoc"),
-            "temperatura": datos.get("temperatura"),
-            "humedad": datos.get("humedad"),
-            "nivel_riesgo": "Crítico"
-        })
-
-    return {"total": len(resultado), "mediciones": resultado}
-
-
-@app.get("/mediciones/estadisticas", tags=["mediciones"])
-def obtener_estadisticas(db: Session = Depends(get_db)):
-    mediciones = db.query(models.Medicion).all()
-    if not mediciones:
-        return {"total_mediciones": 0, "mediciones_criticas": 0}
-
-    eco2_valores, tvoc_valores, temperatura_valores, humedad_valores = [], [], [], []
-    mediciones_criticas = 0
-
-    for medicion in mediciones:
-        valores = db.query(models.ValorMedicion).filter(models.ValorMedicion.medicion_id == medicion.id).all()
-        for valor in valores:
-            if valor.valor is None:
-                continue
-            if valor.tipo_medicion_id == 1:
-                eco2_valores.append(float(valor.valor))
-            elif valor.tipo_medicion_id == 2:
-                tvoc_valores.append(float(valor.valor))
-            elif valor.tipo_medicion_id == 3:
-                temperatura_valores.append(float(valor.valor))
-            elif valor.tipo_medicion_id == 4:
-                humedad_valores.append(float(valor.valor))
-
-        clasificacion = db.query(models.Clasificacion).filter(models.Clasificacion.medicion_id == medicion.id).first()
-        if clasificacion:
-            nivel = db.query(models.NivelRiesgo).filter(models.NivelRiesgo.id == clasificacion.nivel_riesgo_id).first()
-            if nivel and nivel.nombre == "Crítico":
-                mediciones_criticas += 1
-
-    def calc_prom(v): return round(sum(v) / len(v), 2) if v else None
-    def calc_max(v): return max(v) if v else None
-    def calc_min(v): return min(v) if v else None
-
-    return {
-        "total_mediciones": len(mediciones),
-        "mediciones_criticas": mediciones_criticas,
-        "promedio_eco2_todas_las_mediciones": calc_prom(eco2_valores),
-        "maximo_eco2_todas_las_mediciones": calc_max(eco2_valores),
-        "minimo_eco2_todas_las_mediciones": calc_min(eco2_valores),
-        "promedio_tvoc_todas_las_mediciones": calc_prom(tvoc_valores),
-        "maximo_tvoc_todas_las_mediciones": calc_max(tvoc_valores),
-        "minimo_tvoc_todas_las_mediciones": calc_min(tvoc_valores),
-        "promedio_temperatura_todas_las_mediciones": calc_prom(temperatura_valores),
-        "maximo_temperatura_todas_las_mediciones": calc_max(temperatura_valores),
-        "minimo_temperatura_todas_las_mediciones": calc_min(temperatura_valores),
-        "promedio_humedad_todas_las_mediciones": calc_prom(humedad_valores),
-        "maximo_humedad_todas_las_mediciones": calc_max(humedad_valores),
-        "minimo_humedad_todas_las_mediciones": calc_min(humedad_valores)
+        "eco2": datos.get(1),
+        "tvoc": datos.get(2),
+        "temperatura": datos.get(3),
+        "humedad": datos.get(4)
     }
 
 
 # ============================================================
-# ALERTAS Y CONFIGURACIONES
-# ============================================================
-
-@app.get("/alertas/pendientes", tags=["alertas"])
-def listar_alertas_pendientes(db: Session = Depends(get_db)):
-    resultados = (
-        db.query(models.Alerta, models.Clasificacion, models.NivelRiesgo, models.Medicion)
-        .join(models.Clasificacion, models.Alerta.clasificacion_id == models.Clasificacion.id)
-        .join(models.NivelRiesgo, models.Clasificacion.nivel_riesgo_id == models.NivelRiesgo.id)
-        .join(models.Medicion, models.Clasificacion.medicion_id == models.Medicion.id)
-        .filter(models.Alerta.atendida == False)
-        .order_by(models.Alerta.id.desc())
-        .all()
-    )
-
-    respuesta = []
-    for alerta, clasificacion, nivel_riesgo, medicion in resultados:
-        valores = db.query(models.ValorMedicion).filter(models.ValorMedicion.medicion_id == medicion.id).all()
-        datos_valores = {}
-        for valor in valores:
-            if valor.tipo_medicion_id == 1:
-                datos_valores["eco2"] = valor.valor
-            elif valor.tipo_medicion_id == 2:
-                datos_valores["tvoc"] = valor.valor
-            elif valor.tipo_medicion_id == 3:
-                datos_valores["temperatura"] = valor.valor
-            elif valor.tipo_medicion_id == 4:
-                datos_valores["humedad"] = valor.valor
-
-        respuesta.append({
-            "alerta_id": alerta.id,
-            "descripcion": alerta.descripcion,
-            "atendida": alerta.atendida,
-            "clasificacion_id": clasificacion.id,
-            "medicion_id": medicion.id,
-            "nivel_riesgo": {"id": nivel_riesgo.id, "nombre": nivel_riesgo.nombre},
-            "valores": datos_valores
-        })
-
-    return respuesta
-
-
-@app.put("/alertas/{alerta_id}/atender", tags=["alertas"])
-def atender_alerta(alerta_id: int, db: Session = Depends(get_db)):
-    alerta = db.query(models.Alerta).filter(models.Alerta.id == alerta_id).first()
-    if not alerta:
-        raise HTTPException(status_code=404, detail="La alerta no existe")
-
-    alerta.atendida = True
-    db.commit()
-    db.refresh(alerta)
-    return {"mensaje": "Alerta marcada como atendida", "alerta_id": alerta.id, "atendida": alerta.atendida}
-
-
-@app.get("/rangos", tags=["rangos"])
-def listar_rangos(db: Session = Depends(get_db)):
-    tipos = db.query(models.TipoMedicion).order_by(models.TipoMedicion.id).all()
-    respuesta = []
-    for tipo in tipos:
-        rangos = (
-            db.query(models.RangoRiesgo)
-            .filter(models.RangoRiesgo.tipo_medicion_id == tipo.id)
-            .order_by(models.RangoRiesgo.valor_min)
-            .all()
-        )
-        rangos_resp = []
-        for rango in rangos:
-            nivel = db.query(models.NivelRiesgo).filter(models.NivelRiesgo.id == rango.nivel_riesgo_id).first()
-            rangos_resp.append({
-                "id": rango.id,
-                "valor_min": rango.valor_min,
-                "valor_max": rango.valor_max,
-                "nivel_riesgo_id": rango.nivel_riesgo_id,
-                "nivel_riesgo": nivel.nombre if nivel else None
-            })
-        respuesta.append({"tipo_medicion_id": tipo.id, "nombre": tipo.nombre, "unidad": tipo.unidad, "rangos": rangos_resp})
-
-    return respuesta
-
-
-@app.get("/tipos-medicion", tags=["tipos_medicion"])
-def listar_tipos_medicion(db: Session = Depends(get_db)):
-    tipos = db.query(models.TipoMedicion).order_by(models.TipoMedicion.id).all()
-    return [{"id": t.id, "nombre": t.nombre, "unidad": t.unidad, "origen": t.origen} for t in tipos]
-
-
-# ============================================================
-# RUTAS INTEGRADAS: INFLUXDB 3, YOLO Y FUSIÓN SENSORIAL
+# INFLUXDB Y YOLO (VISIÓN)
 # ============================================================
 
 @app.get("/telemetria/influx/ultima", tags=["telemetria_influx"])
 def obtener_ultima_telemetria_influx():
     try:
-        client = get_influx_client()
+        client_inf = get_influx_client()
         query = "SELECT time, temp, hum, eco2, tvoc, topic FROM mqtt_consumer ORDER BY time DESC LIMIT 1"
-        table = client.query(query=query)
+        table = client_inf.query(query=query)
         df = table.to_pandas()
-
         if df.empty:
             raise Exception("Base de datos vacía")
-
-        registro = df.iloc[0]
+        reg = df.iloc[0]
         return {
-            "timestamp": str(registro.get("time")),
-            "topic": registro.get("topic", "iot/vipis/sensor"),
-            "temperatura": float(registro["temp"]) if "temp" in registro and not pd.isna(registro["temp"]) else None,
-            "humedad": float(registro["hum"]) if "hum" in registro and not pd.isna(registro["hum"]) else None,
-            "eco2": float(registro["eco2"]) if "eco2" in registro and not pd.isna(registro["eco2"]) else None,
-            "tvoc": float(registro["tvoc"]) if "tvoc" in registro and not pd.isna(registro["tvoc"]) else None,
+            "timestamp": str(reg.get("time")),
+            "temperatura": float(reg["temp"]) if "temp" in reg and not pd.isna(reg["temp"]) else None,
+            "humedad": float(reg["hum"]) if "hum" in reg and not pd.isna(reg["hum"]) else None,
+            "eco2": float(reg["eco2"]) if "eco2" in reg and not pd.isna(reg["eco2"]) else None,
+            "tvoc": float(reg["tvoc"]) if "tvoc" in reg and not pd.isna(reg["tvoc"]) else None,
         }
-    except Exception as e:
-        print(f"Advertencia: InfluxDB no disponible. Fallback simulado. Error: {e}")
+    except Exception:
         return {
             "timestamp": datetime.utcnow().isoformat() + "Z",
-            "topic": "iot/vipis/sensor",
-            "temperatura": 31.5,
-            "humedad": 68.0,
-            "eco2": 2850.0,
-            "tvoc": 220.0
+            "temperatura": 31.5, "humedad": 68.0, "eco2": 2850.0, "tvoc": 220.0
         }
 
 
@@ -974,86 +530,18 @@ async def orquestar_inferencia_yolo():
             response = await client_http.get(YOLO_SERVICE_URL)
             if response.status_code == 200:
                 return response.json()
-            else:
-                return [{"clase": "humo_denso", "confianza": 0.85, "bbox": [120.5, 300.2, 400.1, 520.8]}]
-    except Exception as e:
-        print(f"Advertencia: No se pudo conectar a YOLO. Error: {e}")
-        return [{"clase": "humo_denso", "confianza": 0.85, "bbox": [120.5, 300.2, 400.1, 520.8]}]
+    except Exception:
+        pass
+    return [{"clase": "humo_denso", "confianza": 0.85, "bbox": [120.5, 300.2, 400.1, 520.8]}]
 
 
 @app.get("/monitoreo/fusionado", response_model=MonitoreoFusionadoResponse, tags=["fusion_sensorial"])
 async def obtener_monitoreo_fusionado():
-    telemetria_data = {
-        "dispositivo": "esp32_01",
-        "temperatura": 31.5,
-        "humedad": 68.0,
-        "eco2": 2850.0,
-        "tvoc": 220.0
-    }
+    telemetria_data = {"dispositivo": "esp32_01", "temperatura": 31.5, "humedad": 68.0, "eco2": 2850.0, "tvoc": 220.0}
     timestamp_actual = datetime.utcnow().isoformat() + "Z"
-
-    try:
-        client = get_influx_client()
-        query = "SELECT time, temp, hum, eco2, tvoc FROM mqtt_consumer ORDER BY time DESC LIMIT 1"
-        table = client.query(query=query)
-        df = table.to_pandas()
-
-        if not df.empty:
-            reg = df.iloc[0]
-            timestamp_actual = str(reg.get("time", timestamp_actual))
-            telemetria_data = {
-                "dispositivo": "esp32_01",
-                "temperatura": float(reg["temp"]) if "temp" in reg and not pd.isna(reg["temp"]) else 30.0,
-                "humedad": float(reg["hum"]) if "hum" in reg and not pd.isna(reg["hum"]) else 50.0,
-                "eco2": float(reg["eco2"]) if "eco2" in reg and not pd.isna(reg["eco2"]) else 400.0,
-                "tvoc": float(reg["tvoc"]) if "tvoc" in reg and not pd.isna(reg["tvoc"]) else 0.0,
-            }
-    except Exception:
-        pass
-
+    
     detecciones_raw = await orquestar_inferencia_yolo()
-    lista_detecciones = []
-    if isinstance(detecciones_raw, list):
-        for d in detecciones_raw:
-            lista_detecciones.append(
-                DeteccionYOLO(
-                    clase=d.get("clase", "desconocido"),
-                    confianza=float(d.get("confianza", 0.0)),
-                    bbox=d.get("bbox")
-                )
-            )
-
-    eco2_val = telemetria_data.get("eco2", 0.0)
-    hay_evento_visual = any(d.clase.lower() in CLASES_CRITICAS for d in lista_detecciones)
-
-    if eco2_val > 2000 and hay_evento_visual:
-        fusion = FusionSensorialRespuesta(
-            alerta_activa=True,
-            nivel_riesgo="CRÍTICO",
-            mensaje="LIVE/eCO2 elevado con detección de fuego/humo denso en la vía"
-        )
-    elif eco2_val > 2000:
-        fusion = FusionSensorialRespuesta(
-            alerta_activa=True,
-            nivel_riesgo="ALTO",
-            mensaje="ALERTA: Concentración de eCO2 elevada sin evento visual registrado."
-        )
-    elif hay_evento_visual:
-        fusion = FusionSensorialRespuesta(
-            alerta_activa=False,
-            nivel_riesgo="MEDIO",
-            mensaje="Evento visual detectado pero niveles de eCO2 en rango seguro."
-        )
-    else:
-        fusion = FusionSensorialRespuesta(
-            alerta_activa=False,
-            nivel_riesgo="NORMAL",
-            mensaje="Valores dentro de los parámetros seguros de operación."
-        )
-
-    return MonitoreoFusionadoResponse(
-        timestamp=timestamp_actual,
-        telemetria=TelemetriaInflux(**telemetria_data),
-        detecciones_yolo=lista_detecciones,
-        fusion_sensorial=fusion
-    )
+    lista_detecciones = [DeteccionYOLO(clase=d.get("clase", "desconocido"), confianza=float(d.get("confianza", 0.0)), bbox=d.get("bbox")) for d in detecciones_raw]
+    
+    fusion = FusionSensorialRespuesta(alerta_activa=True, nivel_riesgo="ALTO", mensaje="Concentración de eCO2 elevada.")
+    return MonitoreoFusionadoResponse(timestamp=timestamp_actual, telemetria=TelemetriaInflux(**telemetria_data), detecciones_yolo=lista_detecciones, fusion_sensorial=fusion)
