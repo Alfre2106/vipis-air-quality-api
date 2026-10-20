@@ -206,10 +206,10 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
     try:
         query_db = text("""
             SELECT m.fecha_hora,
-                   MAX(CASE WHEN v.tipo_medicion_id = 1 THEN v.valor END) AS eco2,
-                   MAX(CASE WHEN v.tipo_medicion_id = 2 THEN v.valor END) AS tvoc,
-                   MAX(CASE WHEN v.tipo_medicion_id = 3 THEN v.valor END) AS temperatura,
-                   MAX(CASE WHEN v.tipo_medicion_id = 4 THEN v.valor END) AS humedad
+            MAX(CASE WHEN v.tipo_medicion_id = 1 THEN v.valor END) AS eco2,
+            MAX(CASE WHEN v.tipo_medicion_id = 2 THEN v.valor END) AS tvoc,
+            MAX(CASE WHEN v.tipo_medicion_id = 3 THEN v.valor END) AS temperatura,
+            MAX(CASE WHEN v.tipo_medicion_id = 4 THEN v.valor END) AS humedad
             FROM mediciones m
             JOIN valores_medicion v ON v.medicion_id = m.id
             GROUP BY m.id, m.fecha_hora
@@ -269,6 +269,7 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
         return resultado
         
     except Exception as e:
+        print(f"ERROR EXACTO DE GEMINI: {str(e)}")
         # Red de respaldo local por si la API falla o agota cuota
         texto_lower = prompt_usuario.lower()
         accion = "desconocido"
