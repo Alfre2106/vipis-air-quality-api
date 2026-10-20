@@ -246,7 +246,7 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
     
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-2.0-flash', # <--- Usar este modelo estable
             contents=prompt_usuario,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
@@ -309,10 +309,10 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
 def obtener_ultimo_registro_menu(db: Session = Depends(get_db)):
     query = text("""
         SELECT m.id, m.fecha_hora,
-               MAX(CASE WHEN v.tipo_medicion_id = 1 THEN v.valor END) AS eco2,
-               MAX(CASE WHEN v.tipo_medicion_id = 2 THEN v.valor END) AS tvoc,
-               MAX(CASE WHEN v.tipo_medicion_id = 3 THEN v.valor END) AS temperatura,
-               MAX(CASE WHEN v.tipo_medicion_id = 4 THEN v.valor END) AS humedad
+            MAX(CASE WHEN v.tipo_medicion_id = 1 THEN v.valor END) AS eco2,
+            MAX(CASE WHEN v.tipo_medicion_id = 2 THEN v.valor END) AS tvoc,
+            MAX(CASE WHEN v.tipo_medicion_id = 3 THEN v.valor END) AS temperatura,
+            MAX(CASE WHEN v.tipo_medicion_id = 4 THEN v.valor END) AS humedad
         FROM mediciones m
         JOIN valores_medicion v ON v.medicion_id = m.id
         GROUP BY m.id, m.fecha_hora
