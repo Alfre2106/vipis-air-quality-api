@@ -2335,7 +2335,7 @@ async def iniciar_bot_cloud():
 
     await _bot_aplicacion.initialize()
     await _bot_aplicacion.start()
-    await _bot_aplicacion.updater.start_polling()
+    await _bot_aplicacion.updater.start_polling(drop_pending_updates=True)
 
     print("🤖 Bot de Telegram iniciado (modo nube).")
     print("💬 Lenguaje natural activado.")
