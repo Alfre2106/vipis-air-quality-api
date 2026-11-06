@@ -1,6 +1,7 @@
 import os
 import re
 import requests
+import asyncio
 from io import BytesIO
 
 import matplotlib
@@ -2334,7 +2335,16 @@ async def iniciar_bot_cloud():
         return
 
     await _bot_aplicacion.initialize()
+
+    # Limpiar conexiones de polling viejas (instancia anterior de Render)
+    try:
+        await _bot_aplicacion.bot.delete_webhook(drop_pending_updates=True)
+        print("🧹 Conexion anterior limpiada.")
+    except Exception:
+        pass
+
     await _bot_aplicacion.start()
+    await asyncio.sleep(5)
     await _bot_aplicacion.updater.start_polling(drop_pending_updates=True)
 
     print("🤖 Bot de Telegram iniciado (modo nube).")
