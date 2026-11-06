@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+from contextlib import asynccontextmanager
 import pandas as pd
 import httpx
 from fastapi import FastAPI, Depends, HTTPException
@@ -22,7 +23,7 @@ from schemas import (
     DeteccionYOLO,
     FusionSensorialRespuesta
 )
-from telegram_bot import enviar_mensaje_telegram
+from telegram_bot import enviar_mensaje_telegram, iniciar_bot_cloud, detener_bot_cloud
 
 # URL del servicio YOLO de Visión
 YOLO_SERVICE_URL = os.getenv("YOLO_SERVICE_URL", "http://localhost:8001/predict")
@@ -31,10 +32,20 @@ YOLO_SERVICE_URL = os.getenv("YOLO_SERVICE_URL", "http://localhost:8001/predict"
 CLASES_CRITICAS = ["foco_incendio", "humo_denso", "humo", "vehiculo", "carro", "fuego", "persona"]
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Arrancar el bot de Telegram junto con la API
+    await iniciar_bot_cloud()
+    yield
+    # Detener el bot al apagar la API
+    await detener_bot_cloud()
+
+
 app = FastAPI(
     title="VIPIS - API de Calidad del Aire e Integración IoT + CV",
     description="API para el registro, monitoreo, orquestación YOLO y fusión sensorial de la Vía Parque Isla de Salamanca",
-    version="2.0.0"
+    version="2.0.0",
+    lifespan=lifespan
 )
 
 # Configuración CORS completa para permitir solicitudes desde GitHub Pages o scripts locales
@@ -59,7 +70,11 @@ class MensajeChat(BaseModel):
 # INICIALIZACIÓN DE GEMINI
 # ============================================================
 api_key_gemini = os.getenv("GEMINI_API_KEY")
-client = genai.Client()
+try:
+    client = genai.Client()
+except Exception:
+    client = None
+    print("⚠️ GEMINI_API_KEY no configurada. El endpoint /chat funcionará en modo respaldo.")
 
 
 # ============================================================
@@ -196,23 +211,28 @@ def cambiar_estado_led(comando: ComandoLED, db: Session = Depends(get_db)):
     "/chat",
     tags=["chat_ia"],
     summary="Chat con IA para control y consultas (Punto 4)",
-    description="Interpreta órdenes en lenguaje natural usando Gemini para accionar el LED o consultar sensores."
+    description="Asistente con IA que interpreta lenguaje natural para consultar sensores, estadísticas, alertas, dispositivos, ubicaciones y controlar el LED."
 )
 async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
     prompt_usuario = mensaje.texto
     
-    # Obtener el último registro de la base de datos para darle contexto real a la IA
-    datos_sensor_str = "No hay mediciones registradas actualmente."
+    # Recopilar contexto completo del sistema para la IA
+    contexto = []
+
+    # Última medición
     try:
         query_db = text("""
-            SELECT m.fecha_hora,
+            SELECT m.id, m.fecha_hora, m.dispositivo_id,
             MAX(CASE WHEN v.tipo_medicion_id = 1 THEN v.valor END) AS eco2,
             MAX(CASE WHEN v.tipo_medicion_id = 2 THEN v.valor END) AS tvoc,
             MAX(CASE WHEN v.tipo_medicion_id = 3 THEN v.valor END) AS temperatura,
-            MAX(CASE WHEN v.tipo_medicion_id = 4 THEN v.valor END) AS humedad
+            MAX(CASE WHEN v.tipo_medicion_id = 4 THEN v.valor END) AS humedad,
+            nr.nombre AS nivel_riesgo
             FROM mediciones m
             JOIN valores_medicion v ON v.medicion_id = m.id
-            GROUP BY m.id, m.fecha_hora
+            LEFT JOIN clasificaciones c ON c.medicion_id = m.id
+            LEFT JOIN niveles_riesgo nr ON nr.id = c.nivel_riesgo_id
+            GROUP BY m.id, m.fecha_hora, m.dispositivo_id, nr.nombre
             ORDER BY m.fecha_hora DESC
             LIMIT 1;
         """)
@@ -222,31 +242,163 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
             tvoc = int(res.tvoc) if res.tvoc is not None else 0
             temp = float(res.temperatura) if res.temperatura is not None else 0.0
             hum = int(res.humedad) if res.humedad is not None else 0
-            datos_sensor_str = f"eCO₂: {eco2} ppm, TVOC: {tvoc} ppb, Temperatura: {temp}°C, Humedad: {hum}%"
+            nivel = res.nivel_riesgo or "N/D"
+            fecha = str(res.fecha_hora)[:19] if res.fecha_hora else "N/D"
+            contexto.append(
+                f"Última medición #{res.id}: eCO₂={eco2} ppm, TVOC={tvoc} ppb, "
+                f"Temperatura={temp}°C, Humedad={hum}%, Riesgo={nivel}, "
+                f"Fecha={fecha}, Dispositivo ID={res.dispositivo_id}"
+            )
     except Exception:
         pass
 
+    # Estadísticas generales
+    try:
+        total = db.execute(text("SELECT COUNT(*) FROM mediciones;")).scalar() or 0
+        criticas = db.execute(
+            text("SELECT COUNT(*) FROM clasificaciones WHERE nivel_riesgo_id >= 5;")
+        ).scalar() or 0
+        prom_eco2 = db.execute(
+            text("SELECT ROUND(AVG(v.valor)::numeric,1) FROM valores_medicion v WHERE v.tipo_medicion_id = 1;")
+        ).scalar() or 0
+        max_eco2 = db.execute(
+            text("SELECT MAX(v.valor) FROM valores_medicion v WHERE v.tipo_medicion_id = 1;")
+        ).scalar() or 0
+        prom_temp = db.execute(
+            text("SELECT ROUND(AVG(v.valor)::numeric,1) FROM valores_medicion v WHERE v.tipo_medicion_id = 3;")
+        ).scalar() or 0
+        prom_hum = db.execute(
+            text("SELECT ROUND(AVG(v.valor)::numeric,1) FROM valores_medicion v WHERE v.tipo_medicion_id = 4;")
+        ).scalar() or 0
+        contexto.append(
+            f"Estadísticas: Total mediciones={total}, Críticas={criticas}, "
+            f"Promedio eCO₂={prom_eco2} ppm, Máx eCO₂={max_eco2} ppm, "
+            f"Promedio temperatura={prom_temp}°C, Promedio humedad={prom_hum}%"
+        )
+    except Exception:
+        pass
+
+    # Promedio eCO2 últimas 24h
+    try:
+        prom_24h = db.execute(text("""
+            SELECT ROUND(AVG(v.valor)::numeric, 1)
+            FROM mediciones m
+            JOIN valores_medicion v ON v.medicion_id = m.id
+            WHERE v.tipo_medicion_id = 1
+              AND m.fecha_hora >= NOW() - INTERVAL '24 hours';
+        """)).scalar()
+        contexto.append(f"Promedio eCO₂ últimas 24h: {prom_24h or 0} ppm")
+    except Exception:
+        pass
+
+    # Alertas pendientes
+    try:
+        n_alertas = db.execute(
+            text("SELECT COUNT(*) FROM alertas WHERE atendida = false;")
+        ).scalar() or 0
+        contexto.append(f"Alertas pendientes: {n_alertas}")
+    except Exception:
+        pass
+
+    # Dispositivos
+    try:
+        dispositivos = db.query(models.Dispositivo).all()
+        if dispositivos:
+            disp_str = ", ".join([
+                f"ID={d.id} código={d.codigo} estado={d.estado}"
+                for d in dispositivos
+            ])
+            contexto.append(f"Dispositivos: {disp_str}")
+    except Exception:
+        pass
+
+    # Sensores
+    try:
+        sensores = db.query(models.Sensor).all()
+        if sensores:
+            sen_str = ", ".join([
+                f"{s.nombre} ({s.modelo}, {s.fabricante}, tipo={s.tipo})"
+                for s in sensores
+            ])
+            contexto.append(f"Sensores: {sen_str}")
+    except Exception:
+        pass
+
+    # Ubicaciones
+    try:
+        ubicaciones = db.query(models.Ubicacion).all()
+        if ubicaciones:
+            ubi_str = ", ".join([
+                f"{u.nombre} (zona={u.zona}, lat={float(u.latitud)}, lon={float(u.longitud)})"
+                for u in ubicaciones
+            ])
+            contexto.append(f"Ubicaciones: {ubi_str}")
+    except Exception:
+        pass
+
+    # Estado del LED
+    try:
+        led_estado = db.execute(
+            text("SELECT estado FROM comandos_led ORDER BY id DESC LIMIT 1;")
+        ).scalar()
+        contexto.append(f"LED actual: {led_estado or 'off'}")
+    except Exception:
+        pass
+
+    contexto_str = "\n".join(contexto) if contexto else "Sin datos disponibles."
+
     system_instruction = f"""
     Eres el asistente virtual experto del sistema IoT VIPIS (Vía Parque Isla de Salamanca).
-    Tienes el contexto actual de los sensores del sistema: [{datos_sensor_str}].
-    
-    Analiza la intención del usuario (comprende sinónimos y frases distintas como 'prende', 'enciende', 'apaga', 'valor actual', 'último registro').
-    Debes responder ÚNICAMENTE en formato JSON plano con dos campos exactos:
-    - "accion": 
-        * "encender_led" (si el usuario pide prender, encender o iluminar el led/luz).
-        * "apagar_led" (si el usuario pide apagar el led/luz).
-        * "ultimo_registro" (si pregunta por el valor actual del sensor, la última medición, el aire, temperatura o humedad).
-        * "desconocido" (si es una pregunta totalmente ajena o un saludo general).
-    - "respuesta": Un texto redactado en español, sumamente amigable, natural y conversacional. 
-      * Si la acción es "encender_led", confirma que enviaste la orden para encender el LED.
-      * Si la acción es "apagar_led", confirma que enviaste la orden para apagar el LED.
-      * Si la acción es "ultimo_registro", menciona los valores actuales del sensor.
-      * Si es "desconocido", responde educadamente aclarando que estás para ayudar con el monitoreo VIPIS.
+    Es un sistema de monitoreo de calidad del aire que usa sensores de eCO₂, TVOC, temperatura y humedad,
+    integrado con visión por computador (YOLO) y telemetría InfluxDB, con un LED controlable en el ESP32.
+
+    CONTEXTO ACTUAL DEL SISTEMA:
+    {contexto_str}
+
+    CAPACIDADES DE CONSULTA:
+    Puedes responder preguntas sobre cualquier aspecto del sistema usando el contexto anterior:
+    - Estado y valores actuales de los sensores (eCO₂, TVOC, temperatura, humedad)
+    - Estadísticas (promedios, máximos, mínimos, total de mediciones, mediciones críticas)
+    - Nivel de riesgo actual
+    - Alertas pendientes
+    - Dispositivos registrados
+    - Sensores instalados (nombre, modelo, fabricante, tipo)
+    - Ubicaciones de monitoreo (zona, coordenadas)
+    - Estado del LED (encendido/apagado)
+    - Promedio de eCO₂ en las últimas 24 horas
+
+    ACCIONES QUE PUEDES EJECUTAR:
+    - Encender el LED del ESP32
+    - Apagar el LED del ESP32
+
+    INSTRUCCIONES:
+    Analiza la intención del usuario (comprende sinónimos: 'prende'='enciende', 'valor actual'='último registro', etc.).
+    Responde ÚNICAMENTE en formato JSON con dos campos:
+    - "accion": una de estas opciones:
+        * "encender_led" — si pide prender, encender o iluminar el LED/luz.
+        * "apagar_led" — si pide apagar el LED/luz.
+        * "consulta" — si pregunta sobre sensores, estadísticas, alertas, dispositivos,
+          ubicaciones, niveles de riesgo, o cualquier aspecto del sistema.
+        * "desconocido" — si es un saludo o algo ajeno al sistema.
+    - "respuesta": texto en español, amigable, natural y conversacional.
+        * Para "consulta": usa el CONTEXTO ACTUAL para responder con datos reales.
+          Si preguntan por el aire, menciona eCO₂, TVOC, temperatura, humedad y nivel de riesgo.
+          Si preguntan por estadísticas, menciona promedios, máximos, totales, críticas.
+          Si preguntan por alertas, menciona cuántas hay pendientes.
+          Si preguntan por dispositivos o sensores, lista los que haya.
+          Si preguntan por ubicaciones, menciona las zonas.
+          Sé específico y usa los números reales del contexto.
+        * Para "encender_led"/"apagar_led": confirma que enviaste la orden.
+        * Para "desconocido": responde educadamente y menciona que puedes ayudar
+          con consultas sobre sensores, estadísticas, alertas, dispositivos y control del LED.
     """
     
     try:
+        if client is None:
+            raise Exception("Gemini no configurado (modo respaldo local)")
+
         response = client.models.generate_content(
-            model='gemini-3.8-flash', # <--- Usar el modelo que exige Google
+            model='gemini-3.8-flash', 
             contents=prompt_usuario,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
@@ -270,25 +422,122 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
         
     except Exception as e:
         print(f"ERROR EXACTO DE GEMINI: {str(e)}")
-        # Red de respaldo local por si la API falla o agota cuota
+        # Respaldo local por si Gemini no está disponible
         texto_lower = prompt_usuario.lower()
-        accion = "desconocido"
-        
-        if any(w in texto_lower for w in ["apag", "apagar", "apagues"]):
-            accion = "apagar_led"
-            estado_clean = "off"
-            respuesta_ia = "Claro que sí, he procedido a apagar el LED del dispositivo (Modo Respaldo)."
-        elif any(w in texto_lower for w in ["enciend", "prend", "prende", "ilumina"]):
-            accion = "encender_led"
-            estado_clean = "on"
-            respuesta_ia = "¡Entendido! He enviado la orden para encender el LED del sistema (Modo Respaldo)."
-        elif any(w in texto_lower for w in ["sensor", "registro", "valor", "medicion", "aire", "eco2"]):
-            accion = "ultimo_registro"
-            respuesta_ia = f"El registro más reciente de los sensores en el parque es: {datos_sensor_str} (Modo Respaldo)."
-        else:
-            respuesta_ia = "Entiendo tu consulta sobre el sistema VIPIS. ¿Te gustaría consultar los sensores o controlar el actuador?"
+        accion = "consulta"
+        respuesta_ia = ""
 
+        # Control del LED
+        if any(w in texto_lower for w in ["apag", "apagar", "apagues"]) and any(w in texto_lower for w in ["led", "luz"]):
+            accion = "apagar_led"
+            respuesta_ia = "Claro, he procedido a apagar el LED del dispositivo."
+        elif any(w in texto_lower for w in ["enciend", "prend", "prende", "ilumina"]) and any(w in texto_lower for w in ["led", "luz"]):
+            accion = "encender_led"
+            respuesta_ia = "¡Entendido! He enviado la orden para encender el LED."
+
+        # Estadísticas
+        elif any(w in texto_lower for w in ["estadistic", "promedio", "media", "máximo", "maximo", "mínimo", "minimo", "cuántas", "cuantas", "total"]):
+            try:
+                total = db.execute(text("SELECT COUNT(*) FROM mediciones;")).scalar() or 0
+                criticas = db.execute(text("SELECT COUNT(*) FROM clasificaciones WHERE nivel_riesgo_id >= 5;")).scalar() or 0
+                prom = db.execute(text("SELECT ROUND(AVG(v.valor)::numeric,1) FROM valores_medicion v WHERE v.tipo_medicion_id = 1;")).scalar() or 0
+                max_v = db.execute(text("SELECT MAX(v.valor) FROM valores_medicion v WHERE v.tipo_medicion_id = 1;")).scalar() or 0
+                respuesta_ia = f"En total hay {total} mediciones registradas, de las cuales {criticas} son críticas. El promedio de eCO₂ es {prom} ppm y el máximo registrado es {max_v} ppm."
+            except Exception:
+                respuesta_ia = "Las estadísticas están disponibles pero no pude consultarlas en este momento."
+
+        # Alertas
+        elif any(w in texto_lower for w in ["alerta", "alertas", "pendiente", "riesgo"]):
+            try:
+                count = db.execute(text("SELECT COUNT(*) FROM alertas WHERE atendida = false;")).scalar() or 0
+                if count > 0:
+                    respuesta_ia = f"Hay {count} alertas pendientes en el sistema que requieren atención."
+                else:
+                    respuesta_ia = "No hay alertas pendientes, todo en orden."
+            except Exception:
+                respuesta_ia = "No pude consultar las alertas en este momento."
+
+        # Dispositivos
+        elif any(w in texto_lower for w in ["dispositivo", "dispositivos"]):
+            try:
+                dispositivos = db.query(models.Dispositivo).all()
+                if dispositivos:
+                    respuesta_ia = f"Hay {len(dispositivos)} dispositivos registrados: " + ", ".join([f"{d.codigo} (estado: {d.estado})" for d in dispositivos])
+                else:
+                    respuesta_ia = "No hay dispositivos registrados."
+            except Exception:
+                respuesta_ia = "No pude consultar los dispositivos."
+
+        # Sensores
+        elif any(w in texto_lower for w in ["sensor", "sensores"]) and "dispositivo" not in texto_lower:
+            try:
+                sensores = db.query(models.Sensor).all()
+                if sensores:
+                    respuesta_ia = "Los sensores instalados son: " + ", ".join([f"{s.nombre} ({s.modelo}, {s.fabricante})" for s in sensores])
+                else:
+                    respuesta_ia = "No hay sensores registrados."
+            except Exception:
+                respuesta_ia = "No pude consultar los sensores."
+
+        # Ubicaciones
+        elif any(w in texto_lower for w in ["ubicacion", "ubicaciones", "donde", "lugar", "zona", "coordenada"]):
+            try:
+                ubicaciones = db.query(models.Ubicacion).all()
+                if ubicaciones:
+                    respuesta_ia = "Las ubicaciones de monitoreo son: " + ", ".join([f"{u.nombre} en zona {u.zona}" for u in ubicaciones])
+                else:
+                    respuesta_ia = "No hay ubicaciones registradas."
+            except Exception:
+                respuesta_ia = "No pude consultar las ubicaciones."
+
+        # Estado del LED
+        elif any(w in texto_lower for w in ["estado del led", "estado led", "led encendido", "led apagado", "cómo está el led", "como esta el led"]):
+            try:
+                led = db.execute(text("SELECT estado FROM comandos_led ORDER BY id DESC LIMIT 1;")).scalar() or "off"
+                respuesta_ia = f"El LED del ESP32 está actualmente {'encendido' if led == 'on' else 'apagado'}."
+            except Exception:
+                respuesta_ia = "No pude consultar el estado del LED."
+
+        # Última medición / calidad del aire
+        elif any(w in texto_lower for w in ["sensor", "registro", "valor", "medicion", "aire", "eco2", "temperatura", "humedad", "tvoc", "calidad", "cómo está", "como esta"]):
+            try:
+                q = text("""
+                    SELECT m.id,
+                    MAX(CASE WHEN v.tipo_medicion_id = 1 THEN v.valor END) AS eco2,
+                    MAX(CASE WHEN v.tipo_medicion_id = 2 THEN v.valor END) AS tvoc,
+                    MAX(CASE WHEN v.tipo_medicion_id = 3 THEN v.valor END) AS temperatura,
+                    MAX(CASE WHEN v.tipo_medicion_id = 4 THEN v.valor END) AS humedad,
+                    nr.nombre AS nivel_riesgo
+                    FROM mediciones m
+                    JOIN valores_medicion v ON v.medicion_id = m.id
+                    LEFT JOIN clasificaciones c ON c.medicion_id = m.id
+                    LEFT JOIN niveles_riesgo nr ON nr.id = c.nivel_riesgo_id
+                    GROUP BY m.id, nr.nombre
+                    ORDER BY m.fecha_hora DESC
+                    LIMIT 1;
+                """)
+                r = db.execute(q).fetchone()
+                if r:
+                    nivel = r.nivel_riesgo or "N/D"
+                    respuesta_ia = (f"El último registro (medición #{r.id}) indica: "
+                        f"eCO₂={int(r.eco2 or 0)} ppm, TVOC={int(r.tvoc or 0)} ppb, "
+                        f"Temperatura={float(r.temperatura or 0)}°C, Humedad={int(r.humedad or 0)}%. "
+                        f"Nivel de riesgo: {nivel}.")
+                else:
+                    respuesta_ia = "No hay mediciones registradas actualmente."
+            except Exception:
+                respuesta_ia = "No pude consultar la última medición."
+
+        # Saludo o desconocido
+        else:
+            accion = "desconocido"
+            respuesta_ia = ("Soy el asistente del sistema VIPIS de monitoreo de calidad del aire. "
+                "Puedo ayudarte con consultas sobre sensores, estadísticas, alertas, "
+                "dispositivos, ubicaciones y control del LED. ¿Qué necesitas saber?")
+
+        # Ejecutar acción del LED
         if accion in ["encender_led", "apagar_led"]:
+            estado_clean = "on" if accion == "encender_led" else "off"
             try:
                 db.execute(text("INSERT INTO comandos_led (estado) VALUES (:estado);"), {"estado": estado_clean})
                 db.commit()
@@ -468,7 +717,17 @@ async def crear_medicion(datos: MedicionCreate, db: Session = Depends(get_db)):
         telegram_enviado = False
         if alerta:
             db.refresh(alerta)
-            msg = f"🚨 ALERTA VIPIS\nRiesgo: {nivel_riesgo.nombre}\neCO₂: {datos.eco2} ppm"
+            msg = (
+                f"🚨 *ALERTA VIPIS*\n\n"
+                f"⚠️ Riesgo: *{nivel_riesgo.nombre}*\n"
+                f"🆔 Medición: #{medicion.id}\n"
+                f"📅 {medicion.fecha_hora}\n\n"
+                f"🌫️ eCO₂: {datos.eco2} ppm\n"
+                f"🧪 TVOC: {datos.tvoc} ppb\n"
+                f"🌡️ Temperatura: {datos.temperatura} °C\n"
+                f"💧 Humedad: {datos.humedad} %\n\n"
+                f"📝 {alerta.descripcion}"
+            )
             telegram_enviado = await enviar_mensaje_telegram(msg)
 
         return {"mensaje": "Medición registrada correctamente", "medicion_id": medicion.id, "telegram_enviado": telegram_enviado}
@@ -479,21 +738,174 @@ async def crear_medicion(datos: MedicionCreate, db: Session = Depends(get_db)):
 
 @app.get("/mediciones/ultima", tags=["mediciones"])
 def obtener_ultima_medicion(db: Session = Depends(get_db)):
-    medicion = db.query(models.Medicion).order_by(models.Medicion.fecha_hora.desc()).first()
-    if not medicion:
+    query = text("""
+        SELECT m.id, m.dispositivo_id, m.fecha_hora,
+            MAX(CASE WHEN v.tipo_medicion_id = 1 THEN v.valor END) AS eco2,
+            MAX(CASE WHEN v.tipo_medicion_id = 2 THEN v.valor END) AS tvoc,
+            MAX(CASE WHEN v.tipo_medicion_id = 3 THEN v.valor END) AS temperatura,
+            MAX(CASE WHEN v.tipo_medicion_id = 4 THEN v.valor END) AS humedad,
+            nr.nombre AS nivel_riesgo
+        FROM mediciones m
+        JOIN valores_medicion v ON v.medicion_id = m.id
+        LEFT JOIN clasificaciones c ON c.medicion_id = m.id
+        LEFT JOIN niveles_riesgo nr ON nr.id = c.nivel_riesgo_id
+        GROUP BY m.id, m.dispositivo_id, m.fecha_hora, nr.nombre
+        ORDER BY m.fecha_hora DESC
+        LIMIT 1;
+    """)
+    res = db.execute(query).fetchone()
+    if not res:
         raise HTTPException(status_code=404, detail="No hay mediciones registradas")
 
-    valores = db.query(models.ValorMedicion).filter(models.ValorMedicion.medicion_id == medicion.id).all()
-    datos = {v.tipo_medicion_id: v.valor for v in valores}
-    
     return {
-        "medicion_id": medicion.id,
-        "fecha_hora": medicion.fecha_hora,
-        "eco2": datos.get(1),
-        "tvoc": datos.get(2),
-        "temperatura": datos.get(3),
-        "humedad": datos.get(4)
+        "medicion_id": res.id,
+        "dispositivo_id": res.dispositivo_id,
+        "fecha_hora": res.fecha_hora,
+        "eco2": res.eco2,
+        "tvoc": res.tvoc,
+        "temperatura": res.temperatura,
+        "humedad": res.humedad,
+        "nivel_riesgo": res.nivel_riesgo
     }
+
+
+@app.get("/mediciones", tags=["mediciones"])
+def listar_mediciones(limit: int = 10, db: Session = Depends(get_db)):
+    if limit < 1 or limit > 100:
+        limit = 10
+
+    query = text("""
+        SELECT m.id, m.dispositivo_id, m.fecha_hora,
+            MAX(CASE WHEN v.tipo_medicion_id = 1 THEN v.valor END) AS eco2,
+            MAX(CASE WHEN v.tipo_medicion_id = 2 THEN v.valor END) AS tvoc,
+            MAX(CASE WHEN v.tipo_medicion_id = 3 THEN v.valor END) AS temperatura,
+            MAX(CASE WHEN v.tipo_medicion_id = 4 THEN v.valor END) AS humedad,
+            nr.nombre AS nivel_riesgo
+        FROM mediciones m
+        JOIN valores_medicion v ON v.medicion_id = m.id
+        LEFT JOIN clasificaciones c ON c.medicion_id = m.id
+        LEFT JOIN niveles_riesgo nr ON nr.id = c.nivel_riesgo_id
+        GROUP BY m.id, m.dispositivo_id, m.fecha_hora, nr.nombre
+        ORDER BY m.fecha_hora DESC
+        LIMIT :limit;
+    """)
+    rows = db.execute(query, {"limit": limit}).fetchall()
+    return {"mediciones": [
+        {
+            "medicion_id": r.id,
+            "dispositivo_id": r.dispositivo_id,
+            "fecha_hora": r.fecha_hora,
+            "eco2": r.eco2,
+            "tvoc": r.tvoc,
+            "temperatura": r.temperatura,
+            "humedad": r.humedad,
+            "nivel_riesgo": r.nivel_riesgo
+        }
+        for r in rows
+    ]}
+
+
+@app.get("/mediciones/estadisticas", tags=["mediciones"])
+def estadisticas_mediciones(db: Session = Depends(get_db)):
+    total = db.execute(text("SELECT COUNT(*) FROM mediciones;")).scalar() or 0
+
+    criticas = db.execute(
+        text("SELECT COUNT(*) FROM clasificaciones WHERE nivel_riesgo_id >= 5;")
+    ).scalar() or 0
+
+    query = text("""
+        SELECT
+            ROUND(AVG(CASE WHEN v.tipo_medicion_id = 1 THEN v.valor END)::numeric, 1) AS promedio_eco2,
+            MAX(CASE WHEN v.tipo_medicion_id = 1 THEN v.valor END) AS maximo_eco2,
+            MIN(CASE WHEN v.tipo_medicion_id = 1 THEN v.valor END) AS minimo_eco2,
+            ROUND(AVG(CASE WHEN v.tipo_medicion_id = 2 THEN v.valor END)::numeric, 1) AS promedio_tvoc,
+            MAX(CASE WHEN v.tipo_medicion_id = 2 THEN v.valor END) AS maximo_tvoc,
+            MIN(CASE WHEN v.tipo_medicion_id = 2 THEN v.valor END) AS minimo_tvoc,
+            ROUND(AVG(CASE WHEN v.tipo_medicion_id = 3 THEN v.valor END)::numeric, 1) AS promedio_temperatura,
+            MAX(CASE WHEN v.tipo_medicion_id = 3 THEN v.valor END) AS maximo_temperatura,
+            MIN(CASE WHEN v.tipo_medicion_id = 3 THEN v.valor END) AS minimo_temperatura,
+            ROUND(AVG(CASE WHEN v.tipo_medicion_id = 4 THEN v.valor END)::numeric, 1) AS promedio_humedad,
+            MAX(CASE WHEN v.tipo_medicion_id = 4 THEN v.valor END) AS maximo_humedad,
+            MIN(CASE WHEN v.tipo_medicion_id = 4 THEN v.valor END) AS minimo_humedad
+        FROM valores_medicion v;
+    """)
+    res = db.execute(query).fetchone()
+
+    def val(attr):
+        return getattr(res, attr) if res and getattr(res, attr) is not None else 0
+
+    return {
+        "total_mediciones": total,
+        "mediciones_criticas": criticas,
+        "promedio_eco2_todas_las_mediciones": val("promedio_eco2"),
+        "maximo_eco2_todas_las_mediciones": val("maximo_eco2"),
+        "minimo_eco2_todas_las_mediciones": val("minimo_eco2"),
+        "promedio_tvoc_todas_las_mediciones": val("promedio_tvoc"),
+        "maximo_tvoc_todas_las_mediciones": val("maximo_tvoc"),
+        "minimo_tvoc_todas_las_mediciones": val("minimo_tvoc"),
+        "promedio_temperatura_todas_las_mediciones": val("promedio_temperatura"),
+        "maximo_temperatura_todas_las_mediciones": val("maximo_temperatura"),
+        "minimo_temperatura_todas_las_mediciones": val("minimo_temperatura"),
+        "promedio_humedad_todas_las_mediciones": val("promedio_humedad"),
+        "maximo_humedad_todas_las_mediciones": val("maximo_humedad"),
+        "minimo_humedad_todas_las_mediciones": val("minimo_humedad")
+    }
+
+
+@app.get("/alertas/pendientes", tags=["alertas"])
+def alertas_pendientes(db: Session = Depends(get_db)):
+    query = text("""
+        SELECT a.id AS alerta_id, a.descripcion, a.fecha_generada,
+               c.medicion_id,
+               nr.nombre AS nivel_riesgo_nombre,
+               MAX(CASE WHEN v.tipo_medicion_id = 1 THEN v.valor END) AS eco2,
+               MAX(CASE WHEN v.tipo_medicion_id = 2 THEN v.valor END) AS tvoc
+        FROM alertas a
+        JOIN clasificaciones c ON c.id = a.clasificacion_id
+        JOIN niveles_riesgo nr ON nr.id = c.nivel_riesgo_id
+        JOIN valores_medicion v ON v.medicion_id = c.medicion_id
+        WHERE a.atendida = false
+        GROUP BY a.id, a.descripcion, a.fecha_generada, c.medicion_id, nr.nombre
+        ORDER BY a.fecha_generada DESC;
+    """)
+    rows = db.execute(query).fetchall()
+    return [
+        {
+            "alerta_id": r.alerta_id,
+            "medicion_id": r.medicion_id,
+            "valores": {
+                "eco2": r.eco2,
+                "tvoc": r.tvoc
+            },
+            "nivel_riesgo": {
+                "nombre": r.nivel_riesgo_nombre
+            },
+            "descripcion": r.descripcion
+        }
+        for r in rows
+    ]
+
+
+@app.put("/alertas/{alerta_id}/atender", tags=["alertas"])
+def atender_alerta(alerta_id: int, db: Session = Depends(get_db)):
+    existe = db.execute(
+        text("SELECT id FROM alertas WHERE id = :alerta_id;"),
+        {"alerta_id": alerta_id}
+    ).fetchone()
+
+    if not existe:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No existe la alerta #{alerta_id}"
+        )
+
+    db.execute(
+        text("UPDATE alertas SET atendida = true WHERE id = :alerta_id;"),
+        {"alerta_id": alerta_id}
+    )
+    db.commit()
+
+    return {"mensaje": f"Alerta #{alerta_id} atendida correctamente"}
 
 
 # ============================================================

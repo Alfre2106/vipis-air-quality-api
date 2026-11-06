@@ -1,14 +1,25 @@
 import os
 import re
 import requests
+from io import BytesIO
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 from dotenv import load_dotenv
 
-from telegram import Update
+from telegram import (
+    Update,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    BotCommand
+)
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters
 )
@@ -20,8 +31,83 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 VIPIS_API_URL = os.getenv(
     "VIPIS_API_URL",
-    "http://127.0.0.1:8000"
+    f"http://127.0.0.1:{os.getenv('PORT', '8000')}"
 )
+
+
+# ============================================================
+# FUNCIONES AUXILIARES DE RESPUESTA Y TECLADOS
+# ============================================================
+
+def teclado_menu_principal() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 Última medición", callback_data="ultima"),
+            InlineKeyboardButton("📋 Mediciones", callback_data="mediciones")
+        ],
+        [
+            InlineKeyboardButton("📈 Estadísticas", callback_data="menu_estadisticas"),
+            InlineKeyboardButton("🚨 Alertas", callback_data="alertas")
+        ],
+        [
+            InlineKeyboardButton("📡 Dispositivos", callback_data="dispositivos"),
+            InlineKeyboardButton("🤖 Ayuda", callback_data="ayuda")
+        ],
+        [
+            InlineKeyboardButton("🔒 Control LED", callback_data="menu_led"),
+            InlineKeyboardButton("📊 Gráficos", callback_data="menu_graficos")
+        ]
+    ])
+
+
+def teclado_estadisticas() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 General", callback_data="stats_general"),
+            InlineKeyboardButton("🕐 Promedio 24h", callback_data="stats_24h")
+        ],
+        [
+            InlineKeyboardButton("📈 Max/Min día", callback_data="stats_maxmin"),
+            InlineKeyboardButton("🔴 Días críticos", callback_data="stats_criticos")
+        ],
+        [InlineKeyboardButton("⬅️ Volver", callback_data="menu")]
+    ])
+
+
+def teclado_volver() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Volver al menú", callback_data="menu")]
+    ])
+
+
+async def enviar_respuesta(
+    update: Update,
+    texto: str,
+    parse_mode: str = "Markdown",
+    reply_markup=None
+):
+    if update.callback_query:
+        await update.callback_query.answer()
+        if reply_markup is None:
+            reply_markup = teclado_volver()
+        try:
+            await update.callback_query.edit_message_text(
+                texto,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup
+            )
+        except Exception:
+            await update.callback_query.message.reply_text(
+                texto,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup
+            )
+    else:
+        await update.message.reply_text(
+            texto,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup
+        )
 
 
 # ============================================================
@@ -75,23 +161,16 @@ async def start(
 
     mensaje = (
         "🤖 *VIPIS - Calidad del Aire*\n\n"
-        "Bienvenido al sistema de monitoreo.\n\n"
-        "Puedes realizar consultas utilizando lenguaje natural.\n\n"
-        "Ejemplos:\n"
-        "📊 ¿Cuál es la última medición?\n"
-        "🌿 ¿Cuál es la calidad del aire ahora?\n"
-        "🌿 ¿Cómo está el aire hoy?\n"
-        "📊 Dame el último valor del sensor\n"
-        "📈 ¿Cuál es el promedio de las mediciones?\n"
-        "🚨 ¿Hay alertas pendientes?\n"
-        "📋 Muéstrame las últimas mediciones\n"
-        "📡 ¿Qué dispositivos hay registrados?\n"
-        "🔧 Atiende la alerta 2"
+        "Bienvenido al sistema de monitoreo de la "
+        "Vía Parque Isla de Salamanca.\n\n"
+        "Selecciona una opción del menú o escribe "
+        "tu consulta en lenguaje natural."
     )
 
-    await update.message.reply_text(
+    await enviar_respuesta(
+        update,
         mensaje,
-        parse_mode="Markdown"
+        reply_markup=teclado_menu_principal()
     )
 
 
@@ -113,7 +192,7 @@ async def ultima(
 
         if respuesta.status_code != 200:
 
-            await update.message.reply_text(
+            await enviar_respuesta(update, 
                 "❌ No fue posible obtener la última medición."
             )
 
@@ -134,7 +213,7 @@ async def ultima(
             f"⚠️ Riesgo: *{data['nivel_riesgo'] or 'N/D'}*"
         )
 
-        await update.message.reply_text(
+        await enviar_respuesta(update, 
             mensaje,
             parse_mode="Markdown"
         )
@@ -143,7 +222,7 @@ async def ultima(
 
         print(f"Error en /ultima: {e}")
 
-        await update.message.reply_text(
+        await enviar_respuesta(update, 
             "❌ Error conectando con la API VIPIS."
         )
 
@@ -166,7 +245,7 @@ async def mediciones(
 
         if respuesta.status_code != 200:
 
-            await update.message.reply_text(
+            await enviar_respuesta(update, 
                 "❌ No fue posible obtener las mediciones."
             )
 
@@ -181,7 +260,7 @@ async def mediciones(
 
         if not mediciones_data:
 
-            await update.message.reply_text(
+            await enviar_respuesta(update, 
                 "📭 No hay mediciones registradas."
             )
 
@@ -203,7 +282,7 @@ async def mediciones(
                 f"📅 {medicion['fecha_hora']}\n\n"
             )
 
-        await update.message.reply_text(
+        await enviar_respuesta(update, 
             mensaje,
             parse_mode="Markdown"
         )
@@ -212,7 +291,7 @@ async def mediciones(
 
         print(f"Error en /mediciones: {e}")
 
-        await update.message.reply_text(
+        await enviar_respuesta(update, 
             "❌ Error conectando con la API VIPIS."
         )
 
@@ -235,7 +314,7 @@ async def alertas(
 
         if respuesta.status_code != 200:
 
-            await update.message.reply_text(
+            await enviar_respuesta(update, 
                 "❌ No fue posible consultar las alertas."
             )
 
@@ -245,7 +324,7 @@ async def alertas(
 
         if not data:
 
-            await update.message.reply_text(
+            await enviar_respuesta(update, 
                 "✅ No hay alertas pendientes."
             )
 
@@ -277,7 +356,7 @@ async def alertas(
                 f"📝 {alerta.get('descripcion', '')}\n\n"
             )
 
-        await update.message.reply_text(
+        await enviar_respuesta(update, 
             mensaje,
             parse_mode="Markdown"
         )
@@ -286,7 +365,7 @@ async def alertas(
 
         print(f"Error en /alertas: {e}")
 
-        await update.message.reply_text(
+        await enviar_respuesta(update, 
             "❌ Error conectando con la API VIPIS."
         )
 
@@ -302,7 +381,7 @@ async def atender(
 
     if not context.args:
 
-        await update.message.reply_text(
+        await enviar_respuesta(update, 
             "⚠️ Debes indicar el ID de la alerta.\n\n"
             "Ejemplo:\n"
             "/atender 2"
@@ -318,7 +397,7 @@ async def atender(
 
     except ValueError:
 
-        await update.message.reply_text(
+        await enviar_respuesta(update, 
             "❌ El ID de la alerta debe ser un número."
         )
 
@@ -335,20 +414,20 @@ async def atender(
 
             data = respuesta.json()
 
-            await update.message.reply_text(
+            await enviar_respuesta(update, 
                 f"✅ Alerta #{alerta_id} atendida correctamente.\n\n"
                 f"Estado: {data.get('mensaje', 'Atendida')}"
             )
 
         elif respuesta.status_code == 404:
 
-            await update.message.reply_text(
+            await enviar_respuesta(update, 
                 f"❌ No existe la alerta #{alerta_id}."
             )
 
         else:
 
-            await update.message.reply_text(
+            await enviar_respuesta(update, 
                 f"❌ No fue posible atender la alerta #{alerta_id}."
             )
 
@@ -356,7 +435,7 @@ async def atender(
 
         print(f"Error en /atender: {e}")
 
-        await update.message.reply_text(
+        await enviar_respuesta(update, 
             "❌ Error conectando con la API VIPIS."
         )
 
@@ -380,7 +459,7 @@ async def obtener_estadistica_especifica(
 
         if respuesta.status_code != 200:
 
-            await update.message.reply_text(
+            await enviar_respuesta(update, 
                 "❌ No fue posible obtener las estadísticas."
             )
 
@@ -416,7 +495,7 @@ async def obtener_estadistica_especifica(
 
         if operacion is None:
 
-            await update.message.reply_text(
+            await enviar_respuesta(update, 
                 "❌ No pude identificar si solicitas "
                 "el promedio, máximo o mínimo."
             )
@@ -488,7 +567,7 @@ async def obtener_estadistica_especifica(
 
         if tipo not in configuracion:
 
-            await update.message.reply_text(
+            await enviar_respuesta(update, 
                 "❌ No pude identificar el tipo de medición solicitado."
             )
 
@@ -526,7 +605,7 @@ async def obtener_estadistica_especifica(
             f"📌 *{valor} {datos['unidad']}*"
         )
 
-        await update.message.reply_text(
+        await enviar_respuesta(update, 
             mensaje,
             parse_mode="Markdown"
         )
@@ -537,7 +616,7 @@ async def obtener_estadistica_especifica(
             f"Error obteniendo estadística específica: {e}"
         )
 
-        await update.message.reply_text(
+        await enviar_respuesta(update, 
             "❌ Error conectando con la API VIPIS."
         )
 
@@ -560,7 +639,7 @@ async def obtener_estadisticas_telegram(
 
         if respuesta.status_code != 200:
 
-            await update.message.reply_text(
+            await enviar_respuesta(update, 
                 "❌ No fue posible obtener las estadísticas."
             )
 
@@ -622,7 +701,7 @@ async def obtener_estadisticas_telegram(
             f"{data.get('minimo_humedad_todas_las_mediciones', 'N/D')} %"
         )
 
-        await update.message.reply_text(
+        await enviar_respuesta(update, 
             mensaje,
             parse_mode="Markdown"
         )
@@ -633,7 +712,7 @@ async def obtener_estadisticas_telegram(
             f"Error obteniendo estadísticas: {e}"
         )
 
-        await update.message.reply_text(
+        await enviar_respuesta(update, 
             "❌ Error conectando con la API VIPIS."
         )
 
@@ -656,7 +735,7 @@ async def obtener_dispositivos_telegram(
 
         if respuesta.status_code != 200:
 
-            await update.message.reply_text(
+            await enviar_respuesta(update, 
                 "❌ No fue posible obtener los dispositivos."
             )
 
@@ -666,7 +745,7 @@ async def obtener_dispositivos_telegram(
 
         if not data:
 
-            await update.message.reply_text(
+            await enviar_respuesta(update, 
                 "📭 No hay dispositivos registrados."
             )
 
@@ -690,7 +769,7 @@ async def obtener_dispositivos_telegram(
                 f"{dispositivo.get('usuario_id', 'N/D')}\n\n"
             )
 
-        await update.message.reply_text(
+        await enviar_respuesta(update, 
             mensaje,
             parse_mode="Markdown"
         )
@@ -701,9 +780,769 @@ async def obtener_dispositivos_telegram(
             f"Error obteniendo dispositivos: {e}"
         )
 
-        await update.message.reply_text(
+        await enviar_respuesta(update, 
             "❌ Error conectando con la API VIPIS."
         )
+
+
+# ============================================================
+# ESTADÍSTICAS ADICIONALES (PROMEDIO 24H, MAX/MIN DÍA, DÍAS CRÍTICOS)
+# ============================================================
+
+async def estadistica_promedio_24h(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    try:
+
+        respuesta = requests.get(
+            f"{VIPIS_API_URL}/stats/promedio-24h",
+            timeout=10
+        )
+
+        if respuesta.status_code != 200:
+
+            await enviar_respuesta(
+                update,
+                "❌ No fue posible obtener el promedio de 24h."
+            )
+
+            return
+
+        data = respuesta.json()
+
+        mensaje = (
+            "🕐 *PROMEDIO eCO₂ - ÚLTIMAS 24 HORAS*\n\n"
+            f"📊 Promedio: {data.get('promedio_eco2', 'N/D')} ppm"
+        )
+
+        await enviar_respuesta(update, mensaje)
+
+    except Exception as e:
+
+        print(f"Error en promedio 24h: {e}")
+
+        await enviar_respuesta(
+            update,
+            "❌ Error conectando con la API VIPIS."
+        )
+
+
+async def estadistica_max_min_dia(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    try:
+
+        respuesta = requests.get(
+            f"{VIPIS_API_URL}/stats/max-min-dia",
+            timeout=10
+        )
+
+        if respuesta.status_code != 200:
+
+            await enviar_respuesta(
+                update,
+                "❌ No fue posible obtener el máximo y mínimo del día."
+            )
+
+            return
+
+        data = respuesta.json()
+
+        mensaje = (
+            "📈 *MÁXIMO Y MÍNIMO DE HOY (eCO₂)*\n\n"
+            f"⬆️ Máximo: {data.get('maximo', 'N/D')} ppm\n"
+            f"⬇️ Mínimo: {data.get('minimo', 'N/D')} ppm"
+        )
+
+        await enviar_respuesta(update, mensaje)
+
+    except Exception as e:
+
+        print(f"Error en max/min día: {e}")
+
+        await enviar_respuesta(
+            update,
+            "❌ Error conectando con la API VIPIS."
+        )
+
+
+async def estadistica_dias_criticos(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    try:
+
+        respuesta = requests.get(
+            f"{VIPIS_API_URL}/stats/dias-criticos",
+            timeout=10
+        )
+
+        if respuesta.status_code != 200:
+
+            await enviar_respuesta(
+                update,
+                "❌ No fue posible obtener los días críticos."
+            )
+
+            return
+
+        data = respuesta.json()
+
+        total = data.get("total_dias_criticos", 0)
+
+        if total == 0:
+
+            await enviar_respuesta(
+                update,
+                "✅ No hay días críticos registrados."
+            )
+
+            return
+
+        mensaje = f"🔴 *DÍAS CRÍTICOS ({total})*\n\n"
+
+        for dia in data.get("dias_criticos", []):
+
+            mensaje += (
+                f"📅 {dia.get('dia', 'N/D')}\n"
+                f"📊 Promedio: {dia.get('promedio', 'N/D')} ppm\n\n"
+            )
+
+        await enviar_respuesta(update, mensaje)
+
+    except Exception as e:
+
+        print(f"Error en días críticos: {e}")
+
+        await enviar_respuesta(
+            update,
+            "❌ Error conectando con la API VIPIS."
+        )
+
+
+# ============================================================
+# AYUDA
+# ============================================================
+
+async def mostrar_ayuda(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    mensaje = (
+        "🤖 *Asistente VIPIS*\n\n"
+        "Puedes preguntarme o usar los botones:\n\n"
+        "📊 ¿Cuál es la última medición?\n"
+        "🌿 ¿Cuál es la calidad del aire ahora?\n"
+        "📈 ¿Cuál es el promedio de eCO₂?\n"
+        "📋 Muéstrame las últimas mediciones\n"
+        "🚨 ¿Hay alertas pendientes?\n"
+        "📡 ¿Qué dispositivos hay registrados?\n"
+        "🔧 Atiende la alerta 2\n"
+        "💡 Enciende el LED\n"
+        "🌑 Apaga el LED\n"
+        "📊 Muéstrame un gráfico de eCO₂\n"
+        "📈 Dibuja la tendencia de eCO₂\n\n"
+        "Cualquier otra consulta será interpretada por IA."
+    )
+
+    await enviar_respuesta(update, mensaje)
+
+
+async def comando_led(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    mensaje = "🔒 *CONTROL DEL LED*\n\nSelecciona una acción:"
+
+    await enviar_respuesta(update, mensaje, reply_markup=teclado_led())
+
+
+async def comando_graficos(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    mensaje = "📊 *GRÁFICOS VIPIS*\n\nSelecciona un gráfico:"
+
+    await enviar_respuesta(update, mensaje, reply_markup=teclado_graficos())
+
+
+# ============================================================
+# CONTROL DEL LED (ESP32)
+# ============================================================
+
+def teclado_led() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("💡 Encender", callback_data="led_on"),
+            InlineKeyboardButton("🌑 Apagar", callback_data="led_off")
+        ],
+        [
+            InlineKeyboardButton("📋 Ver estado", callback_data="led_estado"),
+            InlineKeyboardButton("⬅️ Volver", callback_data="menu")
+        ]
+    ])
+
+
+def teclado_graficos() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📈 eCO₂ por hora", callback_data="grafico_hora"),
+            InlineKeyboardButton("📊 Registros por día", callback_data="grafico_dia")
+        ],
+        [
+            InlineKeyboardButton("📉 Tendencia eCO₂", callback_data="grafico_tendencia"),
+            InlineKeyboardButton("⬅️ Volver", callback_data="menu")
+        ]
+    ])
+
+
+async def controlar_led(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    accion: str
+):
+    try:
+        if accion == "estado":
+            respuesta = requests.get(
+                f"{VIPIS_API_URL}/led",
+                timeout=10
+            )
+            if respuesta.status_code == 200:
+                data = respuesta.json()
+                estado = data.get("estado", "N/D")
+                emoji = "💡" if estado == "on" else "🌑"
+                mensaje = (
+                    f"🔒 *ESTADO DEL LED*\n\n"
+                    f"{emoji} El LED está *{estado.upper()}*"
+                )
+                await enviar_respuesta(update, mensaje)
+            else:
+                await enviar_respuesta(
+                    update,
+                    "❌ No fue posible consultar el estado del LED."
+                )
+        else:
+            respuesta = requests.post(
+                f"{VIPIS_API_URL}/led",
+                json={"estado": accion},
+                timeout=10
+            )
+            if respuesta.status_code == 200:
+                if accion == "on":
+                    mensaje = "✅ LED *ENCENDIDO* correctamente."
+                else:
+                    mensaje = "✅ LED *APAGADO* correctamente."
+                await enviar_respuesta(update, mensaje)
+            else:
+                await enviar_respuesta(
+                    update,
+                    "❌ No fue posible cambiar el estado del LED."
+                )
+    except Exception as e:
+        print(f"Error controlando LED: {e}")
+        await enviar_respuesta(
+            update,
+            "❌ Error conectando con la API VIPIS."
+        )
+
+
+# ============================================================
+# GRÁFICOS CON MATPLOTLIB
+# ============================================================
+
+async def enviar_foto(
+    update: Update,
+    bio: BytesIO,
+    caption: str = None
+):
+    bio.name = "grafico.png"
+    bio.seek(0)
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.message.reply_photo(
+            photo=bio,
+            caption=caption
+        )
+    else:
+        await update.message.reply_photo(
+            photo=bio,
+            caption=caption
+        )
+
+
+async def generar_grafico_eco2_hora(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    try:
+        respuesta = requests.get(
+            f"{VIPIS_API_URL}/stats/promedio-por-hora",
+            timeout=15
+        )
+        if respuesta.status_code != 200:
+            await enviar_respuesta(
+                update,
+                "❌ No fue posible obtener los datos."
+            )
+            return
+
+        data = respuesta.json()
+        datos = data.get("datos", [])
+
+        if not datos:
+            await enviar_respuesta(
+                update,
+                "📭 No hay datos suficientes para generar el gráfico."
+            )
+            return
+
+        datos = list(reversed(datos))
+        valores = [d["promedio_eco2"] for d in datos]
+        etiquetas = []
+        for d in datos:
+            hora_str = d.get("hora", "")
+            etiquetas.append(
+                hora_str.split("T")[1][:5] if "T" in hora_str else hora_str[:5]
+            )
+
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(
+            range(len(valores)),
+            valores,
+            marker='o',
+            linewidth=2,
+            color='#2196F3'
+        )
+        ax.fill_between(
+            range(len(valores)),
+            valores,
+            alpha=0.15,
+            color='#2196F3'
+        )
+        ax.set_title(
+            "Promedio eCO₂ por hora (ppm)",
+            fontsize=14,
+            fontweight='bold'
+        )
+        ax.set_xlabel("Hora")
+        ax.set_ylabel("eCO₂ (ppm)")
+
+        n = max(1, len(etiquetas) // 6)
+        ax.set_xticks(range(0, len(etiquetas), n))
+        ax.set_xticklabels(
+            etiquetas[::n],
+            rotation=45,
+            ha='right'
+        )
+
+        ax.grid(True, alpha=0.3)
+        ax.axhline(
+            y=1000,
+            color='red',
+            linestyle='--',
+            alpha=0.5,
+            label='Crítico (1000 ppm)'
+        )
+        ax.legend()
+
+        plt.tight_layout()
+
+        bio = BytesIO()
+        fig.savefig(bio, format='png', dpi=100)
+        plt.close(fig)
+
+        await enviar_foto(
+            update,
+            bio,
+            "📈 Promedio de eCO₂ por hora"
+        )
+
+    except Exception as e:
+        print(f"Error generando gráfico eCO2 por hora: {e}")
+        await enviar_respuesta(
+            update,
+            "❌ Error generando el gráfico."
+        )
+
+
+async def generar_grafico_registros_dia(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    try:
+        respuesta = requests.get(
+            f"{VIPIS_API_URL}/stats/registros-por-dia",
+            timeout=15
+        )
+        if respuesta.status_code != 200:
+            await enviar_respuesta(
+                update,
+                "❌ No fue posible obtener los datos."
+            )
+            return
+
+        data = respuesta.json()
+        datos = data.get("datos", [])
+
+        if not datos:
+            await enviar_respuesta(
+                update,
+                "📭 No hay datos suficientes para generar el gráfico."
+            )
+            return
+
+        datos = list(reversed(datos))
+        dias = [d["dia"] for d in datos]
+        registros = [d["registros"] for d in datos]
+
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.bar(
+            range(len(registros)),
+            registros,
+            color='#4CAF50',
+            alpha=0.8
+        )
+        ax.set_title(
+            "Registros por día",
+            fontsize=14,
+            fontweight='bold'
+        )
+        ax.set_xlabel("Día")
+        ax.set_ylabel("Cantidad de registros")
+
+        n = max(1, len(dias) // 8)
+        ax.set_xticks(range(0, len(dias), n))
+        ax.set_xticklabels(
+            [d[:10] for d in dias[::n]],
+            rotation=45,
+            ha='right'
+        )
+
+        ax.grid(True, alpha=0.3, axis='y')
+
+        plt.tight_layout()
+
+        bio = BytesIO()
+        fig.savefig(bio, format='png', dpi=100)
+        plt.close(fig)
+
+        await enviar_foto(
+            update,
+            bio,
+            "📊 Registros por día"
+        )
+
+    except Exception as e:
+        print(f"Error generando gráfico registros por día: {e}")
+        await enviar_respuesta(
+            update,
+            "❌ Error generando el gráfico."
+        )
+
+
+async def generar_grafico_tendencia(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    try:
+        respuesta = requests.get(
+            f"{VIPIS_API_URL}/mediciones?limit=50",
+            timeout=15
+        )
+        if respuesta.status_code != 200:
+            await enviar_respuesta(
+                update,
+                "❌ No fue posible obtener los datos."
+            )
+            return
+
+        data = respuesta.json()
+        mediciones = data.get("mediciones", [])
+
+        if not mediciones:
+            await enviar_respuesta(
+                update,
+                "📭 No hay datos suficientes para generar el gráfico."
+            )
+            return
+
+        mediciones = list(reversed(mediciones))
+        eco2 = [
+            m["eco2"] for m in mediciones
+            if m.get("eco2") is not None
+        ]
+
+        if not eco2:
+            await enviar_respuesta(
+                update,
+                "📭 No hay datos de eCO₂ para graficar."
+            )
+            return
+
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(
+            range(len(eco2)),
+            eco2,
+            marker='.',
+            linewidth=1.5,
+            color='#FF5722'
+        )
+        ax.fill_between(
+            range(len(eco2)),
+            eco2,
+            alpha=0.15,
+            color='#FF5722'
+        )
+        ax.set_title(
+            "Tendencia eCO₂ - Últimas 50 mediciones (ppm)",
+            fontsize=14,
+            fontweight='bold'
+        )
+        ax.set_xlabel("Mediciones (cronológico)")
+        ax.set_ylabel("eCO₂ (ppm)")
+        ax.grid(True, alpha=0.3)
+        ax.axhline(
+            y=1000,
+            color='red',
+            linestyle='--',
+            alpha=0.5,
+            label='Crítico (1000 ppm)'
+        )
+        ax.legend()
+
+        plt.tight_layout()
+
+        bio = BytesIO()
+        fig.savefig(bio, format='png', dpi=100)
+        plt.close(fig)
+
+        await enviar_foto(
+            update,
+            bio,
+            "📉 Tendencia de eCO₂"
+        )
+
+    except Exception as e:
+        print(f"Error generando gráfico tendencia: {e}")
+        await enviar_respuesta(
+            update,
+            "❌ Error generando el gráfico."
+        )
+
+
+# ============================================================
+# CONSULTA CON IA (GEMINI)
+# ============================================================
+
+async def consultar_gemini(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    texto: str
+):
+    try:
+        respuesta = requests.post(
+            f"{VIPIS_API_URL}/chat",
+            json={"texto": texto},
+            timeout=30
+        )
+
+        if respuesta.status_code == 200:
+            data = respuesta.json()
+            respuesta_ia = data.get("respuesta", "")
+            if respuesta_ia:
+                await enviar_respuesta(update, f"🤖 {respuesta_ia}")
+            else:
+                await enviar_respuesta(
+                    update,
+                    "🤖 No pude interpretar tu consulta. "
+                    "Escribe /ayuda para ver las opciones disponibles."
+                )
+        else:
+            await enviar_respuesta(
+                update,
+                "🤖 No pude procesar tu consulta en este momento."
+            )
+    except Exception as e:
+        print(f"Error consultando Gemini: {e}")
+        await enviar_respuesta(
+            update,
+            "❌ Error conectando con la API VIPIS."
+        )
+
+
+# ============================================================
+# MANEJO DE BOTONES INTERACTIVOS (CALLBACKS)
+# ============================================================
+
+async def manejar_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    data = query.data
+
+    # Volver al menú principal
+    if data == "menu":
+
+        mensaje = (
+            "🤖 *VIPIS - Calidad del Aire*\n\n"
+            "Selecciona una opción del menú:"
+        )
+
+        await query.edit_message_text(
+            mensaje,
+            parse_mode="Markdown",
+            reply_markup=teclado_menu_principal()
+        )
+
+        return
+
+    # Sub-menú de estadísticas
+    if data == "menu_estadisticas":
+
+        await query.edit_message_text(
+            "📈 *ESTADÍSTICAS VIPIS*\n\n"
+            "Selecciona el tipo de estadística:",
+            parse_mode="Markdown",
+            reply_markup=teclado_estadisticas()
+        )
+
+        return
+
+    # Datos: última medición
+    if data == "ultima":
+
+        await ultima(update, context)
+
+        return
+
+    # Datos: últimas mediciones
+    if data == "mediciones":
+
+        await mediciones(update, context)
+
+        return
+
+    # Datos: alertas pendientes
+    if data == "alertas":
+
+        await alertas(update, context)
+
+        return
+
+    # Datos: dispositivos
+    if data == "dispositivos":
+
+        await obtener_dispositivos_telegram(update, context)
+
+        return
+
+    # Datos: ayuda
+    if data == "ayuda":
+
+        await mostrar_ayuda(update, context)
+
+        return
+
+    # Datos: estadística general
+    if data == "stats_general":
+
+        await obtener_estadisticas_telegram(update, context)
+
+        return
+
+    # Datos: promedio 24h
+    if data == "stats_24h":
+
+        await estadistica_promedio_24h(update, context)
+
+        return
+
+    # Datos: max/min del día
+    if data == "stats_maxmin":
+
+        await estadistica_max_min_dia(update, context)
+
+        return
+
+    # Datos: días críticos
+    if data == "stats_criticos":
+
+        await estadistica_dias_criticos(update, context)
+
+        return
+
+    # Sub-menú LED
+    if data == "menu_led":
+
+        await query.edit_message_text(
+            "🔒 *CONTROL DEL LED*\n\n"
+            "Selecciona una acción:",
+            parse_mode="Markdown",
+            reply_markup=teclado_led()
+        )
+
+        return
+
+    if data == "led_on":
+
+        await controlar_led(update, context, "on")
+
+        return
+
+    if data == "led_off":
+
+        await controlar_led(update, context, "off")
+
+        return
+
+    if data == "led_estado":
+
+        await controlar_led(update, context, "estado")
+
+        return
+
+    # Sub-menú Gráficos
+    if data == "menu_graficos":
+
+        await query.edit_message_text(
+            "📊 *GRÁFICOS VIPIS*\n\n"
+            "Selecciona un gráfico:",
+            parse_mode="Markdown",
+            reply_markup=teclado_graficos()
+        )
+
+        return
+
+    if data == "grafico_hora":
+
+        await generar_grafico_eco2_hora(update, context)
+
+        return
+
+    if data == "grafico_dia":
+
+        await generar_grafico_registros_dia(update, context)
+
+        return
+
+    if data == "grafico_tendencia":
+
+        await generar_grafico_tendencia(update, context)
+
+        return
 
 
 # ============================================================
@@ -1183,7 +2022,7 @@ async def procesar_mensaje(
 
         if not numeros:
 
-            await update.message.reply_text(
+            await enviar_respuesta(update, 
                 "⚠️ Indica el número de la alerta "
                 "que deseas atender.\n\n"
                 "Ejemplo: Atiende la alerta 2"
@@ -1205,7 +2044,7 @@ async def procesar_mensaje(
 
                 data = respuesta.json()
 
-                await update.message.reply_text(
+                await enviar_respuesta(update, 
                     f"✅ Alerta #{alerta_id} "
                     f"atendida correctamente.\n\n"
                     f"Estado: "
@@ -1214,13 +2053,13 @@ async def procesar_mensaje(
 
             elif respuesta.status_code == 404:
 
-                await update.message.reply_text(
+                await enviar_respuesta(update, 
                     f"❌ No existe la alerta #{alerta_id}."
                 )
 
             else:
 
-                await update.message.reply_text(
+                await enviar_respuesta(update, 
                     f"❌ No fue posible atender "
                     f"la alerta #{alerta_id}."
                 )
@@ -1231,7 +2070,7 @@ async def procesar_mensaje(
                 f"Error atendiendo alerta: {e}"
             )
 
-            await update.message.reply_text(
+            await enviar_respuesta(update, 
                 "❌ Error conectando con la API VIPIS."
             )
 
@@ -1314,7 +2153,7 @@ async def procesar_mensaje(
         for palabra in palabras_ayuda
     ):
 
-        await update.message.reply_text(
+        await enviar_respuesta(update, 
 
             "🤖 *Asistente VIPIS*\n\n"
 
@@ -1340,91 +2179,115 @@ async def procesar_mensaje(
 
 
     # ========================================================
-    # MENSAJE NO RECONOCIDO
+    # CONTROL DEL LED (LENGUAJE NATURAL)
     # ========================================================
 
-    await update.message.reply_text(
+    if (
+        any(p in texto for p in ["enciende", "encender", "prende", "prender", "ilumina"])
+        and any(p in texto for p in ["led", "luz", "bombillo"])
+    ):
 
-        "🤖 No pude interpretar la consulta.\n\n"
+        await controlar_led(update, context, "on")
 
-        "Puedes preguntarme cosas como:\n\n"
+        return
 
-        "• ¿Cuál es la última medición?\n"
-        "• ¿Cuál es la calidad del aire ahora?\n"
-        "• ¿Cómo está el aire hoy?\n"
-        "• Dame el promedio de las mediciones\n"
-        "• ¿Cuál es la temperatura mínima?\n"
-        "• ¿Cuál es la temperatura máxima?\n"
-        "• ¿Hay alertas pendientes?\n"
-        "• ¿Qué dispositivos hay registrados?\n"
-        "• Atiende la alerta 2"
-    )
+    if (
+        any(p in texto for p in ["apaga", "apagar", "apague"])
+        and any(p in texto for p in ["led", "luz", "bombillo"])
+    ):
+
+        await controlar_led(update, context, "off")
+
+        return
+
+    if (
+        "led" in texto
+        and any(p in texto for p in ["estado", "cómo está", "como esta", "encendido", "apagado"])
+    ):
+
+        await controlar_led(update, context, "estado")
+
+        return
+
+    # ========================================================
+    # GRÁFICOS (LENGUAJE NATURAL)
+    # ========================================================
+
+    if any(p in texto for p in ["gráfico", "grafico", "dibuja"]):
+
+        if any(p in texto for p in ["hora", "horas", "por hora"]):
+
+            await generar_grafico_eco2_hora(update, context)
+
+            return
+
+        if any(p in texto for p in ["registro", "registros", "día", "dia", "por día", "por dia"]):
+
+            await generar_grafico_registros_dia(update, context)
+
+            return
+
+        if any(p in texto for p in ["tendencia", "evolución", "evolucion"]):
+
+            await generar_grafico_tendencia(update, context)
+
+            return
+
+        mensaje = "📊 *GRÁFICOS VIPIS*\n\nSelecciona un gráfico:"
+
+        await enviar_respuesta(update, mensaje, reply_markup=teclado_graficos())
+
+        return
+
+    # ========================================================
+    # CONSULTA CON IA (GEMINI) - FALLBACK INTELIGENTE
+    # ========================================================
+
+    await consultar_gemini(update, context, texto_original)
 
 
 # ============================================================
 # INICIAR BOT
 # ============================================================
 
-def iniciar_bot():
+def _construir_aplicacion():
+    """Construye y configura la Application del bot con todos los handlers."""
 
     if not TELEGRAM_BOT_TOKEN:
+        return None
 
-        print(
-            "❌ TELEGRAM_BOT_TOKEN no está configurado."
-        )
-
-        return
+    async def post_init(application):
+        await application.bot.set_my_commands([
+            BotCommand("start", "Iniciar el bot"),
+            BotCommand("ultima", "Última medición"),
+            BotCommand("mediciones", "Últimas mediciones"),
+            BotCommand("alertas", "Alertas pendientes"),
+            BotCommand("estadisticas", "Estadísticas generales"),
+            BotCommand("dispositivos", "Dispositivos registrados"),
+            BotCommand("ayuda", "Ayuda"),
+            BotCommand("led", "Control del LED"),
+            BotCommand("graficos", "Gráficos"),
+        ])
 
     application = (
         Application.builder()
         .token(TELEGRAM_BOT_TOKEN)
+        .post_init(post_init)
         .build()
     )
 
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("ultima", ultima))
+    application.add_handler(CommandHandler("mediciones", mediciones))
+    application.add_handler(CommandHandler("alertas", alertas))
+    application.add_handler(CommandHandler("atender", atender))
+    application.add_handler(CommandHandler("estadisticas", obtener_estadisticas_telegram))
+    application.add_handler(CommandHandler("dispositivos", obtener_dispositivos_telegram))
+    application.add_handler(CommandHandler("ayuda", mostrar_ayuda))
+    application.add_handler(CommandHandler("led", comando_led))
+    application.add_handler(CommandHandler("graficos", comando_graficos))
 
-    # ========================================================
-    # COMANDOS EXISTENTES
-    # ========================================================
-
-    application.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "ultima",
-            ultima
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "mediciones",
-            mediciones
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "alertas",
-            alertas
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "atender",
-            atender
-        )
-    )
-
-
-    # ========================================================
-    # LENGUAJE NATURAL
-    # ========================================================
+    application.add_handler(CallbackQueryHandler(manejar_callback))
 
     application.add_handler(
         MessageHandler(
@@ -1433,16 +2296,62 @@ def iniciar_bot():
         )
     )
 
+    return application
 
-    print(
-        "🤖 Bot de Telegram iniciado."
-    )
 
-    print(
-        "💬 Modo de lenguaje natural activado."
-    )
+def iniciar_bot():
+    """Inicia el bot en modo local (bloqueante)."""
+
+    application = _construir_aplicacion()
+
+    if not application:
+        print("❌ TELEGRAM_BOT_TOKEN no está configurado.")
+        return
+
+    print("🤖 Bot de Telegram iniciado.")
+    print("💬 Modo de lenguaje natural activado.")
+    print("🔘 Botones interactivos activados.")
 
     application.run_polling()
+
+
+# ============================================================
+# MODO NUBE (NO BLOQUEANTE, PARA RENDER)
+# ============================================================
+
+_bot_aplicacion = None
+
+
+async def iniciar_bot_cloud():
+    """Inicia el bot en modo no-bloqueante para correr junto con la API."""
+
+    global _bot_aplicacion
+
+    _bot_aplicacion = _construir_aplicacion()
+
+    if not _bot_aplicacion:
+        print("⚠️ TELEGRAM_BOT_TOKEN no configurado. Bot nube deshabilitado.")
+        return
+
+    await _bot_aplicacion.initialize()
+    await _bot_aplicacion.start()
+    await _bot_aplicacion.updater.start_polling()
+
+    print("🤖 Bot de Telegram iniciado (modo nube).")
+    print("💬 Lenguaje natural activado.")
+    print("🔘 Botones interactivos activados.")
+
+
+async def detener_bot_cloud():
+    """Detiene el bot correctamente al apagar la API."""
+
+    global _bot_aplicacion
+
+    if _bot_aplicacion:
+        await _bot_aplicacion.updater.stop()
+        await _bot_aplicacion.stop()
+        await _bot_aplicacion.shutdown()
+        print("🤖 Bot de Telegram detenido.")
 
 
 # ============================================================
