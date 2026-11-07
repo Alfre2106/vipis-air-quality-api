@@ -1,7 +1,7 @@
 import os
 import re
-import requests
 import asyncio
+import httpx
 from io import BytesIO
 
 import matplotlib
@@ -34,6 +34,25 @@ VIPIS_API_URL = os.getenv(
     "VIPIS_API_URL",
     f"http://127.0.0.1:{os.getenv('PORT', '8000')}"
 )
+
+
+# ============================================================
+# CLIENTE HTTP ASYNC (reemplaza requests síncrono)
+# ============================================================
+
+async def _get(url: str, timeout: int = 15):
+    async with httpx.AsyncClient(timeout=timeout) as c:
+        return await c.get(url)
+
+
+async def _post(url: str, json: dict = None, timeout: int = 15):
+    async with httpx.AsyncClient(timeout=timeout) as c:
+        return await c.post(url, json=json)
+
+
+async def _put(url: str, timeout: int = 15):
+    async with httpx.AsyncClient(timeout=timeout) as c:
+        return await c.put(url)
 
 
 # ============================================================
@@ -186,10 +205,8 @@ async def ultima(
 
     try:
 
-        respuesta = requests.get(
-            f"{VIPIS_API_URL}/mediciones/ultima",
-            timeout=10
-        )
+        respuesta = await _get(
+            f"{VIPIS_API_URL}/mediciones/ultima")
 
         if respuesta.status_code != 200:
 
@@ -239,10 +256,8 @@ async def mediciones(
 
     try:
 
-        respuesta = requests.get(
-            f"{VIPIS_API_URL}/mediciones?limit=10",
-            timeout=10
-        )
+        respuesta = await _get(
+            f"{VIPIS_API_URL}/mediciones?limit=10")
 
         if respuesta.status_code != 200:
 
@@ -308,10 +323,8 @@ async def alertas(
 
     try:
 
-        respuesta = requests.get(
-            f"{VIPIS_API_URL}/alertas/pendientes",
-            timeout=10
-        )
+        respuesta = await _get(
+            f"{VIPIS_API_URL}/alertas/pendientes")
 
         if respuesta.status_code != 200:
 
@@ -406,10 +419,8 @@ async def atender(
 
     try:
 
-        respuesta = requests.put(
-            f"{VIPIS_API_URL}/alertas/{alerta_id}/atender",
-            timeout=10
-        )
+        respuesta = await _put(
+            f"{VIPIS_API_URL}/alertas/{alerta_id}/atender")
 
         if respuesta.status_code == 200:
 
@@ -453,10 +464,8 @@ async def obtener_estadistica_especifica(
 
     try:
 
-        respuesta = requests.get(
-            f"{VIPIS_API_URL}/mediciones/estadisticas",
-            timeout=30
-        )
+        respuesta = await _get(
+            f"{VIPIS_API_URL}/mediciones/estadisticas")
 
         if respuesta.status_code != 200:
 
@@ -633,10 +642,8 @@ async def obtener_estadisticas_telegram(
 
     try:
 
-        respuesta = requests.get(
-            f"{VIPIS_API_URL}/mediciones/estadisticas",
-            timeout=30
-        )
+        respuesta = await _get(
+            f"{VIPIS_API_URL}/mediciones/estadisticas")
 
         if respuesta.status_code != 200:
 
@@ -729,10 +736,8 @@ async def obtener_dispositivos_telegram(
 
     try:
 
-        respuesta = requests.get(
-            f"{VIPIS_API_URL}/dispositivos",
-            timeout=10
-        )
+        respuesta = await _get(
+            f"{VIPIS_API_URL}/dispositivos")
 
         if respuesta.status_code != 200:
 
@@ -797,10 +802,8 @@ async def estadistica_promedio_24h(
 
     try:
 
-        respuesta = requests.get(
-            f"{VIPIS_API_URL}/stats/promedio-24h",
-            timeout=10
-        )
+        respuesta = await _get(
+            f"{VIPIS_API_URL}/stats/promedio-24h")
 
         if respuesta.status_code != 200:
 
@@ -837,10 +840,8 @@ async def estadistica_max_min_dia(
 
     try:
 
-        respuesta = requests.get(
-            f"{VIPIS_API_URL}/stats/max-min-dia",
-            timeout=10
-        )
+        respuesta = await _get(
+            f"{VIPIS_API_URL}/stats/max-min-dia")
 
         if respuesta.status_code != 200:
 
@@ -878,10 +879,8 @@ async def estadistica_dias_criticos(
 
     try:
 
-        respuesta = requests.get(
-            f"{VIPIS_API_URL}/stats/dias-criticos",
-            timeout=10
-        )
+        respuesta = await _get(
+            f"{VIPIS_API_URL}/stats/dias-criticos")
 
         if respuesta.status_code != 200:
 
@@ -1012,10 +1011,8 @@ async def controlar_led(
 ):
     try:
         if accion == "estado":
-            respuesta = requests.get(
-                f"{VIPIS_API_URL}/led",
-                timeout=10
-            )
+            respuesta = await _get(
+                f"{VIPIS_API_URL}/led")
             if respuesta.status_code == 200:
                 data = respuesta.json()
                 estado = data.get("estado", "N/D")
@@ -1031,11 +1028,9 @@ async def controlar_led(
                     "❌ No fue posible consultar el estado del LED."
                 )
         else:
-            respuesta = requests.post(
+            respuesta = await _post(
                 f"{VIPIS_API_URL}/led",
-                json={"estado": accion},
-                timeout=10
-            )
+                json={"estado": accion})
             if respuesta.status_code == 200:
                 if accion == "on":
                     mensaje = "✅ LED *ENCENDIDO* correctamente."
@@ -1084,10 +1079,8 @@ async def generar_grafico_eco2_hora(
     context: ContextTypes.DEFAULT_TYPE
 ):
     try:
-        respuesta = requests.get(
-            f"{VIPIS_API_URL}/stats/promedio-por-hora",
-            timeout=15
-        )
+        respuesta = await _get(
+            f"{VIPIS_API_URL}/stats/promedio-por-hora")
         if respuesta.status_code != 200:
             await enviar_respuesta(
                 update,
@@ -1179,10 +1172,8 @@ async def generar_grafico_registros_dia(
     context: ContextTypes.DEFAULT_TYPE
 ):
     try:
-        respuesta = requests.get(
-            f"{VIPIS_API_URL}/stats/registros-por-dia",
-            timeout=15
-        )
+        respuesta = await _get(
+            f"{VIPIS_API_URL}/stats/registros-por-dia")
         if respuesta.status_code != 200:
             await enviar_respuesta(
                 update,
@@ -1254,10 +1245,8 @@ async def generar_grafico_tendencia(
     context: ContextTypes.DEFAULT_TYPE
 ):
     try:
-        respuesta = requests.get(
-            f"{VIPIS_API_URL}/mediciones?limit=50",
-            timeout=15
-        )
+        respuesta = await _get(
+            f"{VIPIS_API_URL}/mediciones?limit=50")
         if respuesta.status_code != 200:
             await enviar_respuesta(
                 update,
@@ -1349,11 +1338,9 @@ async def consultar_gemini(
     texto: str
 ):
     try:
-        respuesta = requests.post(
+        respuesta = await _post(
             f"{VIPIS_API_URL}/chat",
-            json={"texto": texto},
-            timeout=30
-        )
+            json={"texto": texto})
 
         if respuesta.status_code == 200:
             data = respuesta.json()
@@ -2035,11 +2022,9 @@ async def procesar_mensaje(
 
         try:
 
-            respuesta = requests.put(
+            respuesta = await _put(
                 f"{VIPIS_API_URL}/alertas/"
-                f"{alerta_id}/atender",
-                timeout=10
-            )
+                f"{alerta_id}/atender")
 
             if respuesta.status_code == 200:
 
