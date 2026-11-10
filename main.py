@@ -2,6 +2,8 @@ import os
 from datetime import datetime
 from contextlib import asynccontextmanager
 import pandas as pd
+import numpy as np
+import joblib
 import httpx
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -548,6 +550,56 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
             "accion": accion,
             "respuesta": respuesta_ia
         }
+
+
+# ============================================================
+# MODELO DE MACHINE LEARNING - VIPIS (Árbol de Decisión)
+# ============================================================
+
+try:
+    modelo_ml = joblib.load("modelo_vipis_ml.pkl")
+    print("✅ Modelo de Machine Learning cargado correctamente.")
+except Exception as e:
+    modelo_ml = None
+    print(f"⚠️ Error al cargar el modelo de Machine Learning: {e}")
+
+
+class MedicionML(BaseModel):
+    temperatura: float  # Corresponde a field3
+    humedad: float      # Corresponde a field4
+    eco2: float         # Corresponde a field5
+    tvoc: float         # Corresponde a field6
+
+
+@app.post(
+    "/api/ml/predecir",
+    tags=["Machine Learning"],
+    summary="Predecir calidad del aire con IA",
+    description="Recibe temperatura, humedad, eCO2 y TVOC, y devuelve la predicción del modelo de Árbol de Decisión."
+)
+def predecir_calidad(medicion: MedicionML):
+    if modelo_ml is None:
+        raise HTTPException(
+            status_code=500, 
+            detail="El modelo de Machine Learning no está cargado en el servidor."
+        )
+    
+    # Organizar los datos en el orden exacto en que se entrenó: [Temperatura, Humedad, eCO2, TVOC]
+    datos_entrada = np.array([[medicion.temperatura, medicion.humedad, medicion.eco2, medicion.tvoc]])
+    
+    # Ejecutar la predicción
+    prediccion = modelo_ml.predict(datos_entrada)[0]
+    
+    return {
+        "estado": "exitoso",
+        "calidad_predicha": prediccion,
+        "datos_recibidos": {
+            "temperatura": medicion.temperatura,
+            "humedad": medicion.humedad,
+            "eco2": medicion.eco2,
+            "tvoc": medicion.tvoc
+        }
+    }
 
 
 # ============================================================

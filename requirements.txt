@@ -10,3 +10,6 @@ httpx
 pandas
 google-genai
 matplotlib
+scikit-learn
+joblib
+pandas
