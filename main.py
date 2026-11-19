@@ -411,14 +411,14 @@ Responde ÚNICAMENTE con un objeto JSON válido con exactamente dos claves:
         if client is None:
             raise Exception("Gemini no configurado (modo respaldo local)")
 
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt_usuario,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                response_mime_type="application/json",
-            ),
-        )
+response = client.models.generate_content(
+    model="gemini-3.8-flash",
+    contents=prompt_usuario,
+    config=types.GenerateContentConfig(
+        system_instruction=system_instruction,
+        response_mime_type="application/json",
+    ),
+)
 
         resultado = json.loads(response.text)
         accion = resultado.get("accion", "desconocido")
