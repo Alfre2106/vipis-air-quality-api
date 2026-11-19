@@ -12,3 +12,4 @@ google-genai
 matplotlib
 scikit-learn
 joblib
+python-multipart
