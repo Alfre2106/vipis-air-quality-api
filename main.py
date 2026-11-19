@@ -102,7 +102,7 @@ except Exception as e:
 )
 def inicio():
     return {
-        "mensaje": "API VIPIS funcionando correctamente con soporte para Visión por Computador y Menú IoT",
+        "mensaje": "API VIPIS funcionando correctamente con soporte para InfluxDB 3, Visión por Computador y Menú IoT",
         "proyecto": "Calidad del Aire - Vía Parque Isla de Salamanca"
     }
 
@@ -227,7 +227,7 @@ def cambiar_estado_led(comando: ComandoLED, db: Session = Depends(get_db)):
 
 
 # ============================================================
-# CHAT CON IA (PUNTO 4 - GOOGLE GEMINI CON RESPALDO NATURAL)
+# CHAT CON IA (PUNTO 4 - GOOGLE GEMINI CON RESPALDO MULTI-MODELO)
 # ============================================================
 
 @app.post(
@@ -392,14 +392,32 @@ Responde ÚNICAMENTE con un objeto JSON válido con exactamente dos claves:
         if client is None:
             raise Exception("Gemini no configurado (modo respaldo local)")
 
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=prompt_usuario,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                response_mime_type="application/json",
-            ),
-        )
+        modelos_gemini = [
+            "gemini-3.8-flash",
+            "gemini-3.8-flash-lite",
+            "gemini-3.0-flash",
+        ]
+
+        response = None
+        ultimo_error = None
+        for nombre_modelo in modelos_gemini:
+            try:
+                response = client.models.generate_content(
+                    model=nombre_modelo,
+                    contents=prompt_usuario,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        response_mime_type="application/json",
+                    ),
+                )
+                print(f"✅ Respuesta generada con {nombre_modelo}", flush=True)
+                break
+            except Exception as err_modelo:
+                ultimo_error = err_modelo
+                print(f"⚠️ {nombre_modelo} no disponible: {err_modelo}", flush=True)
+
+        if response is None:
+            raise ultimo_error
 
         resultado = json.loads(response.text)
         accion = resultado.get("accion", "desconocido")
@@ -1026,9 +1044,7 @@ async def obtener_monitoreo_fusionado():
 # ============================================================
 
 ROBOFLOW_API_KEY = os.getenv("ROBOFLOW_API_KEY", "")
-_roboflow_model = os.getenv("ROBOFLOW_MODEL", "vipis-vision-air")
-_roboflow_version = os.getenv("ROBOFLOW_VERSION", "2")
-ROBOFLOW_MODEL_ID = os.getenv("ROBOFLOW_MODEL_ID", f"{_roboflow_model}/{_roboflow_version}")
+ROBOFLOW_MODEL_ID = os.getenv("ROBOFLOW_MODEL_ID", "vipis-vision-air/2")
 ROBOFLOW_URL = "https://detect.roboflow.com"
 MAX_IMAGEN_BYTES = 2_000_000  # 2 MB por imagen
 
@@ -1123,7 +1139,7 @@ async def _disparar_alerta_vision(db: Session, mejor: dict) -> dict:
         db.rollback()
         print(f"Alerta visión: no se pudo guardar el registro: {e}", flush=True)
 
-    return {"clase": clase, "confianza": confianza, "led": led_ok, "telegram": bool(telegram_ok)}
+    return {"clase": clase, "confianza": confianza, "led_activado": led_ok, "telegram": bool(telegram_ok)}
 
 
 def _asegurar_tabla_detecciones(db: Session):
