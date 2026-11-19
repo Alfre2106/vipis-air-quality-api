@@ -70,6 +70,7 @@ app.add_middleware(
 class ComandoLED(BaseModel):
     estado: str
 
+
 class MensajeChat(BaseModel):
     texto: str
 
@@ -79,8 +80,11 @@ class MensajeChat(BaseModel):
 # ============================================================
 api_key_gemini = os.getenv("GEMINI_API_KEY")
 try:
-    client = genai.Client(api_key=api_key_gemini)
-    print("✅ Cliente de Google GenAI inicializado correctamente.")
+    client = genai.Client(api_key=api_key_gemini) if api_key_gemini else None
+    if client:
+        print("✅ Cliente de Google GenAI inicializado correctamente.")
+    else:
+        print("⚠️ GEMINI_API_KEY no configurada. El endpoint /chat funcionará en modo respaldo.")
 except Exception as e:
     client = None
     print(f"⚠️ GEMINI_API_KEY no configurada o error al iniciar: {e}")
@@ -98,7 +102,7 @@ except Exception as e:
 )
 def inicio():
     return {
-        "mensaje": "API VIPIS funcionando correctamente con soporte para InfluxDB 3, Visión por Computador y Menú IoT",
+        "mensaje": "API VIPIS funcionando correctamente con soporte para Visión por Computador y Menú IoT",
         "proyecto": "Calidad del Aire - Vía Parque Isla de Salamanca"
     }
 
@@ -191,10 +195,10 @@ def obtener_estado_led(db: Session = Depends(get_db)):
 
     query = text("SELECT estado FROM comandos_led ORDER BY id DESC LIMIT 1;")
     resultado = db.execute(query).fetchone()
-    
+
     if not resultado:
         return {"estado": "off"}
-    
+
     return {"estado": resultado[0]}
 
 
@@ -211,7 +215,7 @@ def cambiar_estado_led(comando: ComandoLED, db: Session = Depends(get_db)):
             status_code=400,
             detail="El estado debe ser 'on' u 'off'"
         )
-    
+
     try:
         query = text("INSERT INTO comandos_led (estado) VALUES (:estado);")
         db.execute(query, {"estado": estado_clean})
@@ -223,7 +227,7 @@ def cambiar_estado_led(comando: ComandoLED, db: Session = Depends(get_db)):
 
 
 # ============================================================
-# CHAT CON IA (PUNTO 4 - GOOGLE GEMINI CON RESPALDO BLINDADO)
+# CHAT CON IA (PUNTO 4 - GOOGLE GEMINI CON RESPALDO NATURAL)
 # ============================================================
 
 @app.post(
@@ -234,7 +238,7 @@ def cambiar_estado_led(comando: ComandoLED, db: Session = Depends(get_db)):
 )
 async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
     prompt_usuario = mensaje.texto
-    
+
     # Recopilar contexto completo del sistema para la IA
     contexto = []
 
@@ -264,9 +268,8 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
             nivel = res.nivel_riesgo or "N/D"
             fecha = str(res.fecha_hora)[:19] if res.fecha_hora else "N/D"
             contexto.append(
-                f"Última medición #{res.id}: eCO₂={eco2} ppm, TVOC={tvoc} ppb, "
-                f"Temperatura={temp}°C, Humedad={hum}%, Riesgo={nivel}, "
-                f"Fecha={fecha}, Dispositivo ID={res.dispositivo_id}"
+                f"Última medición (#{res.id}, fecha {fecha}, dispositivo {res.dispositivo_id}): "
+                f"eCO2 {eco2} ppm, TVOC {tvoc} ppb, temperatura {temp} °C, humedad {hum}%, nivel de riesgo '{nivel}'."
             )
     except Exception:
         pass
@@ -290,9 +293,9 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
             text("SELECT ROUND(AVG(v.valor)::numeric,1) FROM valores_medicion v WHERE v.tipo_medicion_id = 4;")
         ).scalar() or 0
         contexto.append(
-            f"Estadísticas: Total mediciones={total}, Críticas={criticas}, "
-            f"Promedio eCO₂={prom_eco2} ppm, Máx eCO₂={max_eco2} ppm, "
-            f"Promedio temperatura={prom_temp}°C, Promedio humedad={prom_hum}%"
+            f"Estadísticas históricas: {total} mediciones en total, {criticas} críticas, "
+            f"promedio de eCO2 de {prom_eco2} ppm (máximo {max_eco2} ppm), "
+            f"temperatura promedio de {prom_temp} °C y humedad promedio de {prom_hum}%."
         )
     except Exception:
         pass
@@ -306,7 +309,7 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
             WHERE v.tipo_medicion_id = 1
               AND m.fecha_hora >= NOW() - INTERVAL '24 hours';
         """)).scalar()
-        contexto.append(f"Promedio eCO₂ últimas 24h: {prom_24h or 0} ppm")
+        contexto.append(f"Promedio de eCO2 en las últimas 24 horas: {prom_24h or 0} ppm.")
     except Exception:
         pass
 
@@ -315,7 +318,26 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
         n_alertas = db.execute(
             text("SELECT COUNT(*) FROM alertas WHERE atendida = false;")
         ).scalar() or 0
-        contexto.append(f"Alertas pendientes: {n_alertas}")
+        contexto.append(f"Alertas pendientes sin atender: {n_alertas}.")
+    except Exception:
+        pass
+
+    # Últimas detecciones de visión por computador
+    try:
+        detecciones = db.execute(text("""
+            SELECT clase, confianza, fecha_hora
+            FROM detecciones_vision
+            ORDER BY fecha_hora DESC
+            LIMIT 3;
+        """)).fetchall()
+        if detecciones:
+            det_str = "; ".join([
+                f"{d.clase} ({float(d.confianza)}% el {str(d.fecha_hora)[:19]})"
+                for d in detecciones
+            ])
+            contexto.append(f"Últimas alertas de visión (YOLO): {det_str}.")
+        else:
+            contexto.append("Últimas alertas de visión (YOLO): sin eventos recientes registrados.")
     except Exception:
         pass
 
@@ -324,10 +346,10 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
         dispositivos = db.query(models.Dispositivo).all()
         if dispositivos:
             disp_str = ", ".join([
-                f"ID={d.id} código={d.codigo} estado={d.estado}"
+                f"{d.codigo} (ID {d.id}, estado: {d.estado})"
                 for d in dispositivos
             ])
-            contexto.append(f"Dispositivos: {disp_str}")
+            contexto.append(f"Dispositivos registrados: {disp_str}.")
     except Exception:
         pass
 
@@ -336,10 +358,10 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
         sensores = db.query(models.Sensor).all()
         if sensores:
             sen_str = ", ".join([
-                f"{s.nombre} ({s.modelo}, {s.fabricante}, tipo={s.tipo})"
+                f"{s.nombre} ({s.modelo} de {s.fabricante}, tipo {s.tipo})"
                 for s in sensores
             ])
-            contexto.append(f"Sensores: {sen_str}")
+            contexto.append(f"Sensores instalados: {sen_str}.")
     except Exception:
         pass
 
@@ -348,10 +370,10 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
         ubicaciones = db.query(models.Ubicacion).all()
         if ubicaciones:
             ubi_str = ", ".join([
-                f"{u.nombre} (zona={u.zona}, lat={float(u.latitud)}, lon={float(u.longitud)})"
+                f"{u.nombre} en zona {u.zona} (lat {float(u.latitud)}, lon {float(u.longitud)})"
                 for u in ubicaciones
             ])
-            contexto.append(f"Ubicaciones: {ubi_str}")
+            contexto.append(f"Ubicaciones de monitoreo: {ubi_str}.")
     except Exception:
         pass
 
@@ -360,74 +382,51 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
         led_estado = db.execute(
             text("SELECT estado FROM comandos_led ORDER BY id DESC LIMIT 1;")
         ).scalar()
-        contexto.append(f"LED actual: {led_estado or 'off'}")
+        contexto.append(f"Estado actual del LED en el ESP32: {'encendido' if led_estado == 'on' else 'apagado'}.")
     except Exception:
         pass
 
-    contexto_str = "\n".join(contexto) if contexto else "Sin datos disponibles."
+    contexto_str = "\n".join(contexto) if contexto else "Sin datos disponibles en este momento."
 
     system_instruction = f"""
-    Eres el asistente virtual experto del sistema IoT VIPIS (Vía Parque Isla de Salamanca).
-    Es un sistema de monitoreo de calidad del aire que usa sensores de eCO₂, TVOC, temperatura y humedad,
-    integrado con visión por computador (YOLO) y telemetría InfluxDB, con un LED controlable en el ESP32.
+Eres el asistente virtual de VIPIS, el sistema de monitoreo ambiental y calidad del aire de la Vía Parque Isla de Salamanca.
+Hablas en español con un tono cercano, claro y conversacional, como un compañero técnico que explica los datos de forma natural y útil.
 
-    CONTEXTO ACTUAL DEL SISTEMA:
-    {contexto_str}
+CONTEXTO ACTUAL DEL SISTEMA EN TIEMPO REAL:
+{contexto_str}
 
-    CAPACIDADES DE CONSULTA:
-    Puedes responder preguntas sobre cualquier aspecto del sistema usando el contexto anterior:
-- Estado y valores actuales de los sensores (eCO₂, TVOC, temperatura, humedad)
-- Estadísticas (promedios, máximos, mínimos, total de mediciones, mediciones críticas)
-- Nivel de riesgo actual
-- Alertas pendientes
-- Dispositivos registrados
-- Sensores instalados (nombre, modelo, fabricante, tipo)
-- Ubicaciones de monitoreo (zona, coordenadas)
-- Estado del LED (encendido/apagado)
-- Promedio de eCO₂ en las últimas 24 horas
+REGLAS DE ESTILO PARA REDACTAR "respuesta":
+- Escribe en párrafos naturales y fluidos; evita formatos robóticos o de ficha técnica como "eCO₂=2000 ppm, TVOC=5000 ppb".
+- Integra los números reales dentro de la oración e interpreta brevemente qué significan (por ejemplo, si el nivel de riesgo es alto o si los gases están elevados, coméntalo de forma natural).
+- No menciones el ID interno de la medición ni la fecha exacta a menos que el usuario los pida.
+- Si el usuario saluda ("hola", "buenas", "¿qué tal?"), respóndele con calidez y cuéntale brevemente en qué le puedes ayudar sin soltar una lista rígida.
+- Si pide encender o apagar el LED, confirma de forma natural que ya enviaste la orden al ESP32.
 
-    ACCIONES QUE PUEDES EJECUTAR:
-- Encender el LED del ESP32
-- Apagar el LED del ESP32
+Responde ÚNICAMENTE con un objeto JSON válido con exactamente dos claves:
+- "accion": "encender_led" | "apagar_led" | "consulta" | "desconocido"
+- "respuesta": texto natural en español para mostrar al usuario.
+"""
 
-    INSTRUCCIONES:
-    Analiza la intención del usuario (comprende sinónimos: 'prende'='enciende', 'valor actual'='último registro', etc.).
-    Responde ÚNICAMENTE en formato JSON con dos campos:
-- "accion": una de estas opciones:
-  - "encender_led" — si pide prender, encender o iluminar el LED/luz.
-  - "apagar_led" — si pide apagar el LED/luz.
-  - "consulta" — si pregunta sobre sensores, estadísticas, alertas, dispositivos,
-          ubicaciones, niveles de riesgo, o cualquier aspecto del sistema.
-- "desconocido" — si es un saludo o algo ajeno al sistema.
-- "respuesta": texto en español, amigable, natural y conversacional.
-  - Para "consulta": usa el CONTEXTO ACTUAL para responder con datos reales.
-          Si preguntan por el aire, menciona eCO₂, TVOC, temperatura, humedad y nivel de riesgo.
-          Si preguntan por estadísticas, menciona promedios, máximos, totales, críticas.
-          Si preguntan por alertas, menciona cuántas hay pendientes.
-          Si preguntan por dispositivos o sensores, lista los que haya.
-          Si preguntan por ubicaciones, menciona las zonas.
-          Sé específico y usa los números reales del contexto.
-- Para "encender_led"/"apagar_led": confirma que enviaste la orden.
-- Para "desconocido": responde educadamente y menciona que puedes ayudar
-          con consultas sobre sensores, estadísticas, alertas, dispositivos y control del LED.
-    """
-    
     try:
         if client is None:
             raise Exception("Gemini no configurado (modo respaldo local)")
 
         response = client.models.generate_content(
-            model='gemini-1.5-flash', 
+            model="gemini-2.5-flash",
             contents=prompt_usuario,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
                 response_mime_type="application/json",
             ),
         )
-        
+
         resultado = json.loads(response.text)
         accion = resultado.get("accion", "desconocido")
-        
+        respuesta_texto = resultado.get("respuesta", "").strip()
+
+        if not respuesta_texto:
+            raise Exception("Respuesta vacía de Gemini")
+
         # Guardar en Neon si la intención implica mover el LED
         if accion in ["encender_led", "apagar_led"]:
             estado_clean = "on" if accion == "encender_led" else "off"
@@ -436,12 +435,15 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
                 db.commit()
             except Exception:
                 db.rollback()
-            
-        return resultado
-        
+
+        return {
+            "accion": accion,
+            "respuesta": respuesta_texto
+        }
+
     except Exception as e:
         print(f"ERROR EXACTO DE GEMINI: {str(e)}")
-        # Respaldo local por si Gemini no está disponible
+        # Respaldo local natural por si Gemini no está disponible
         texto_lower = prompt_usuario.lower()
         accion = "consulta"
         respuesta_ia = ""
@@ -449,10 +451,10 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
         # Control del LED
         if any(w in texto_lower for w in ["apag", "apagar", "apagues"]) and any(w in texto_lower for w in ["led", "luz"]):
             accion = "apagar_led"
-            respuesta_ia = "Claro, he procedido a apagar el LED del dispositivo."
+            respuesta_ia = "Listo, ya envié la orden para apagar el LED del ESP32."
         elif any(w in texto_lower for w in ["enciend", "prend", "prende", "ilumina"]) and any(w in texto_lower for w in ["led", "luz"]):
             accion = "encender_led"
-            respuesta_ia = "¡Entendido! He enviado la orden para encender el LED."
+            respuesta_ia = "Listo, ya envié la orden para encender el LED del ESP32."
 
         # Estadísticas
         elif any(w in texto_lower for w in ["estadistic", "promedio", "media", "máximo", "maximo", "mínimo", "minimo", "cuántas", "cuantas", "total"]):
@@ -461,61 +463,68 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
                 criticas = db.execute(text("SELECT COUNT(*) FROM clasificaciones WHERE nivel_riesgo_id >= 5;")).scalar() or 0
                 prom = db.execute(text("SELECT ROUND(AVG(v.valor)::numeric,1) FROM valores_medicion v WHERE v.tipo_medicion_id = 1;")).scalar() or 0
                 max_v = db.execute(text("SELECT MAX(v.valor) FROM valores_medicion v WHERE v.tipo_medicion_id = 1;")).scalar() or 0
-                respuesta_ia = f"En total hay {total} mediciones registradas, de las cuales {criticas} son críticas. El promedio de eCO₂ es {prom} ppm y el máximo registrado es {max_v} ppm."
+                respuesta_ia = (
+                    f"Hasta ahora llevamos {total} mediciones registradas en el sistema, y {criticas} de ellas "
+                    f"han sido clasificadas como críticas. En general, el promedio de eCO₂ está en {prom} ppm "
+                    f"y el pico máximo alcanzado ha sido de {max_v} ppm."
+                )
             except Exception:
-                respuesta_ia = "Las estadísticas están disponibles pero no pude consultarlas en este momento."
+                respuesta_ia = "Ahora mismo no pude consultar las estadísticas históricas en la base de datos."
 
         # Alertas
         elif any(w in texto_lower for w in ["alerta", "alertas", "pendiente", "riesgo"]):
             try:
                 count = db.execute(text("SELECT COUNT(*) FROM alertas WHERE atendida = false;")).scalar() or 0
                 if count > 0:
-                    respuesta_ia = f"Hay {count} alertas pendientes en el sistema que requieren atención."
+                    respuesta_ia = f"Actualmente tienes {count} alertas pendientes por revisar en el sistema."
                 else:
-                    respuesta_ia = "No hay alertas pendientes, todo en orden."
+                    respuesta_ia = "Por ahora no hay alertas pendientes; todo está bajo control."
             except Exception:
-                respuesta_ia = "No pude consultar las alertas en este momento."
+                respuesta_ia = "No pude revisar el estado de las alertas en este momento."
 
         # Dispositivos
         elif any(w in texto_lower for w in ["dispositivo", "dispositivos"]):
             try:
                 dispositivos = db.query(models.Dispositivo).all()
                 if dispositivos:
-                    respuesta_ia = f"Hay {len(dispositivos)} dispositivos registrados: " + ", ".join([f"{d.codigo} (estado: {d.estado})" for d in dispositivos])
+                    lista = ", ".join([f"{d.codigo} ({d.estado})" for d in dispositivos])
+                    respuesta_ia = f"Tenemos {len(dispositivos)} dispositivo(s) registrado(s): {lista}."
                 else:
-                    respuesta_ia = "No hay dispositivos registrados."
+                    respuesta_ia = "Aún no hay dispositivos registrados en el sistema."
             except Exception:
-                respuesta_ia = "No pude consultar los dispositivos."
+                respuesta_ia = "No pude consultar los dispositivos en este momento."
 
         # Sensores
         elif any(w in texto_lower for w in ["sensor", "sensores"]) and "dispositivo" not in texto_lower:
             try:
                 sensores = db.query(models.Sensor).all()
                 if sensores:
-                    respuesta_ia = "Los sensores instalados son: " + ", ".join([f"{s.nombre} ({s.modelo}, {s.fabricante})" for s in sensores])
+                    lista = ", ".join([f"{s.nombre} ({s.modelo} de {s.fabricante})" for s in sensores])
+                    respuesta_ia = f"El monitoreo trabaja con los siguientes sensores: {lista}."
                 else:
-                    respuesta_ia = "No hay sensores registrados."
+                    respuesta_ia = "No encontré sensores registrados todavía."
             except Exception:
-                respuesta_ia = "No pude consultar los sensores."
+                respuesta_ia = "No pude consultar los sensores en este momento."
 
         # Ubicaciones
         elif any(w in texto_lower for w in ["ubicacion", "ubicaciones", "donde", "lugar", "zona", "coordenada"]):
             try:
                 ubicaciones = db.query(models.Ubicacion).all()
                 if ubicaciones:
-                    respuesta_ia = "Las ubicaciones de monitoreo son: " + ", ".join([f"{u.nombre} en zona {u.zona}" for u in ubicaciones])
+                    lista = ", ".join([f"{u.nombre} (zona {u.zona})" for u in ubicaciones])
+                    respuesta_ia = f"Estamos monitoreando en {lista}."
                 else:
-                    respuesta_ia = "No hay ubicaciones registradas."
+                    respuesta_ia = "No hay ubicaciones registradas en el sistema."
             except Exception:
-                respuesta_ia = "No pude consultar las ubicaciones."
+                respuesta_ia = "No pude consultar las ubicaciones en este momento."
 
         # Estado del LED
         elif any(w in texto_lower for w in ["estado del led", "estado led", "led encendido", "led apagado", "cómo está el led", "como esta el led"]):
             try:
                 led = db.execute(text("SELECT estado FROM comandos_led ORDER BY id DESC LIMIT 1;")).scalar() or "off"
-                respuesta_ia = f"El LED del ESP32 está actualmente {'encendido' if led == 'on' else 'apagado'}."
+                respuesta_ia = f"Ahora mismo el LED del ESP32 está {'encendido' if led == 'on' else 'apagado'}."
             except Exception:
-                respuesta_ia = "No pude consultar el estado del LED."
+                respuesta_ia = "No pude verificar el estado del LED en este momento."
 
         # Última medición / calidad del aire
         elif any(w in texto_lower for w in ["sensor", "registro", "valor", "medicion", "aire", "eco2", "temperatura", "humedad", "tvoc", "calidad", "cómo está", "como esta"]):
@@ -537,22 +546,24 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
                 """)
                 r = db.execute(q).fetchone()
                 if r:
-                    nivel = r.nivel_riesgo or "N/D"
-                    respuesta_ia = (f"El último registro (medición #{r.id}) indica: "
-                        f"eCO₂={int(r.eco2 or 0)} ppm, TVOC={int(r.tvoc or 0)} ppb, "
-                        f"Temperatura={float(r.temperatura or 0)}°C, Humedad={int(r.humedad or 0)}%. "
-                        f"Nivel de riesgo: {nivel}.")
+                    nivel = r.nivel_riesgo or "sin clasificar"
+                    respuesta_ia = (
+                        f"Ahora mismo la calidad del aire presenta un nivel de riesgo {nivel}. "
+                        f"Los sensores registran {int(r.eco2 or 0)} ppm de eCO₂ y {int(r.tvoc or 0)} ppb de TVOC, "
+                        f"con una temperatura ambiente de {float(r.temperatura or 0)} °C y {int(r.humedad or 0)}% de humedad."
+                    )
                 else:
-                    respuesta_ia = "No hay mediciones registradas actualmente."
+                    respuesta_ia = "Todavía no hay mediciones registradas en el sistema."
             except Exception:
-                respuesta_ia = "No pude consultar la última medición."
+                respuesta_ia = "No pude consultar la última medición en este momento."
 
         # Saludo o desconocido
         else:
             accion = "desconocido"
-            respuesta_ia = ("Soy el asistente del sistema VIPIS de monitoreo de calidad del aire. "
-                "Puedo ayudarte con consultas sobre sensores, estadísticas, alertas, "
-                "dispositivos, ubicaciones y control del LED. ¿Qué necesitas saber?")
+            respuesta_ia = (
+                "¡Hola! Soy el asistente de VIPIS. Puedo contarte cómo está la calidad del aire, "
+                "revisar estadísticas, alertas, sensores o encender y apagar el LED del ESP32. ¿Qué te gustaría consultar?"
+            )
 
         # Ejecutar acción del LED
         if accion in ["encender_led", "apagar_led"]:
@@ -597,16 +608,16 @@ class MedicionML(BaseModel):
 def predecir_calidad(medicion: MedicionML):
     if modelo_ml is None:
         raise HTTPException(
-            status_code=500, 
+            status_code=500,
             detail="El modelo de Machine Learning no está cargado en el servidor."
         )
-    
+
     # Organizar los datos en el orden exacto en que se entrenó: [Temperatura, Humedad, eCO2, TVOC]
     datos_entrada = np.array([[medicion.temperatura, medicion.humedad, medicion.eco2, medicion.tvoc]])
-    
+
     # Ejecutar la predicción
     prediccion = modelo_ml.predict(datos_entrada)[0]
-    
+
     return {
         "estado": "exitoso",
         "calidad_predicha": prediccion,
@@ -1021,10 +1032,10 @@ async def orquestar_inferencia_yolo():
 async def obtener_monitoreo_fusionado():
     telemetria_data = {"dispositivo": "esp32_01", "temperatura": 31.5, "humedad": 68.0, "eco2": 2850.0, "tvoc": 220.0}
     timestamp_actual = datetime.utcnow().isoformat() + "Z"
-    
+
     detecciones_raw = await orquestar_inferencia_yolo()
     lista_detecciones = [DeteccionYOLO(clase=d.get("clase", "desconocido"), confianza=float(d.get("confianza", 0.0)), bbox=d.get("bbox")) for d in detecciones_raw]
-    
+
     fusion = FusionSensorialRespuesta(alerta_activa=True, nivel_riesgo="ALTO", mensaje="Concentración de eCO2 elevada.")
     return MonitoreoFusionadoResponse(timestamp=timestamp_actual, telemetria=TelemetriaInflux(**telemetria_data), detecciones_yolo=lista_detecciones, fusion_sensorial=fusion)
 
@@ -1034,7 +1045,9 @@ async def obtener_monitoreo_fusionado():
 # ============================================================
 
 ROBOFLOW_API_KEY = os.getenv("ROBOFLOW_API_KEY", "")
-ROBOFLOW_MODEL_ID = os.getenv("ROBOFLOW_MODEL_ID", "vipis-vision-air/2")
+_roboflow_model = os.getenv("ROBOFLOW_MODEL", "vipis-vision-air")
+_roboflow_version = os.getenv("ROBOFLOW_VERSION", "2")
+ROBOFLOW_MODEL_ID = os.getenv("ROBOFLOW_MODEL_ID", f"{_roboflow_model}/{_roboflow_version}")
 ROBOFLOW_URL = "https://detect.roboflow.com"
 MAX_IMAGEN_BYTES = 2_000_000  # 2 MB por imagen
 
@@ -1129,7 +1142,7 @@ async def _disparar_alerta_vision(db: Session, mejor: dict) -> dict:
         db.rollback()
         print(f"Alerta visión: no se pudo guardar el registro: {e}")
 
-    return {"clase": clase, "confianza": confianza, "led": led_ok, "telegram": bool(telegram_ok)}
+    return {"clase": clase, "confianza": confianza, "led_activado": led_ok, "telegram": bool(telegram_ok)}
 
 
 def _asegurar_tabla_detecciones(db: Session):
