@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 import joblib
 import httpx
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -13,6 +13,11 @@ from pydantic import BaseModel
 from google import genai
 from google.genai import types
 import json
+import base64
+
+# Cargar variables de entorno desde el archivo .env localmente
+from dotenv import load_dotenv
+load_dotenv()
 
 # Importaciones locales
 from database import get_db, get_influx_client
@@ -26,6 +31,7 @@ from schemas import (
     FusionSensorialRespuesta
 )
 from telegram_bot import enviar_mensaje_telegram, iniciar_bot_cloud, detener_bot_cloud
+from vision_alertas import evaluador_vision, UMBRAL_ALERTA
 
 # URL del servicio YOLO de Visión
 YOLO_SERVICE_URL = os.getenv("YOLO_SERVICE_URL", "http://localhost:8001/predict")
@@ -73,10 +79,11 @@ class MensajeChat(BaseModel):
 # ============================================================
 api_key_gemini = os.getenv("GEMINI_API_KEY")
 try:
-    client = genai.Client()
-except Exception:
+    client = genai.Client(api_key=api_key_gemini)
+    print("✅ Cliente de Google GenAI inicializado correctamente.")
+except Exception as e:
     client = None
-    print("⚠️ GEMINI_API_KEY no configurada. El endpoint /chat funcionará en modo respaldo.")
+    print(f"⚠️ GEMINI_API_KEY no configurada o error al iniciar: {e}")
 
 
 # ============================================================
@@ -172,6 +179,16 @@ def listar_ubicaciones(db: Session = Depends(get_db)):
     description="Devuelve el último estado guardado del LED para polling del ESP32."
 )
 def obtener_estado_led(db: Session = Depends(get_db)):
+    # Si el LED lo encendió la visión y ya pasó el tiempo sin fuego/humo, se apaga solo
+    if evaluador_vision.debe_apagar_led():
+        try:
+            db.execute(text("INSERT INTO comandos_led (estado) VALUES ('off');"))
+            db.commit()
+            evaluador_vision.marcar_led_apagado()
+            return {"estado": "off"}
+        except Exception:
+            db.rollback()
+
     query = text("SELECT estado FROM comandos_led ORDER BY id DESC LIMIT 1;")
     resultado = db.execute(query).fetchone()
     
@@ -359,39 +376,39 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
 
     CAPACIDADES DE CONSULTA:
     Puedes responder preguntas sobre cualquier aspecto del sistema usando el contexto anterior:
-    - Estado y valores actuales de los sensores (eCO₂, TVOC, temperatura, humedad)
-    - Estadísticas (promedios, máximos, mínimos, total de mediciones, mediciones críticas)
-    - Nivel de riesgo actual
-    - Alertas pendientes
-    - Dispositivos registrados
-    - Sensores instalados (nombre, modelo, fabricante, tipo)
-    - Ubicaciones de monitoreo (zona, coordenadas)
-    - Estado del LED (encendido/apagado)
-    - Promedio de eCO₂ en las últimas 24 horas
+- Estado y valores actuales de los sensores (eCO₂, TVOC, temperatura, humedad)
+- Estadísticas (promedios, máximos, mínimos, total de mediciones, mediciones críticas)
+- Nivel de riesgo actual
+- Alertas pendientes
+- Dispositivos registrados
+- Sensores instalados (nombre, modelo, fabricante, tipo)
+- Ubicaciones de monitoreo (zona, coordenadas)
+- Estado del LED (encendido/apagado)
+- Promedio de eCO₂ en las últimas 24 horas
 
     ACCIONES QUE PUEDES EJECUTAR:
-    - Encender el LED del ESP32
-    - Apagar el LED del ESP32
+- Encender el LED del ESP32
+- Apagar el LED del ESP32
 
     INSTRUCCIONES:
     Analiza la intención del usuario (comprende sinónimos: 'prende'='enciende', 'valor actual'='último registro', etc.).
     Responde ÚNICAMENTE en formato JSON con dos campos:
-    - "accion": una de estas opciones:
-        * "encender_led" — si pide prender, encender o iluminar el LED/luz.
-        * "apagar_led" — si pide apagar el LED/luz.
-        * "consulta" — si pregunta sobre sensores, estadísticas, alertas, dispositivos,
+- "accion": una de estas opciones:
+  - "encender_led" — si pide prender, encender o iluminar el LED/luz.
+  - "apagar_led" — si pide apagar el LED/luz.
+  - "consulta" — si pregunta sobre sensores, estadísticas, alertas, dispositivos,
           ubicaciones, niveles de riesgo, o cualquier aspecto del sistema.
-        * "desconocido" — si es un saludo o algo ajeno al sistema.
-    - "respuesta": texto en español, amigable, natural y conversacional.
-        * Para "consulta": usa el CONTEXTO ACTUAL para responder con datos reales.
+- "desconocido" — si es un saludo o algo ajeno al sistema.
+- "respuesta": texto en español, amigable, natural y conversacional.
+  - Para "consulta": usa el CONTEXTO ACTUAL para responder con datos reales.
           Si preguntan por el aire, menciona eCO₂, TVOC, temperatura, humedad y nivel de riesgo.
           Si preguntan por estadísticas, menciona promedios, máximos, totales, críticas.
           Si preguntan por alertas, menciona cuántas hay pendientes.
           Si preguntan por dispositivos o sensores, lista los que haya.
           Si preguntan por ubicaciones, menciona las zonas.
           Sé específico y usa los números reales del contexto.
-        * Para "encender_led"/"apagar_led": confirma que enviaste la orden.
-        * Para "desconocido": responde educadamente y menciona que puedes ayudar
+- Para "encender_led"/"apagar_led": confirma que enviaste la orden.
+- Para "desconocido": responde educadamente y menciona que puedes ayudar
           con consultas sobre sensores, estadísticas, alertas, dispositivos y control del LED.
     """
     
@@ -400,7 +417,7 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
             raise Exception("Gemini no configurado (modo respaldo local)")
 
         response = client.models.generate_content(
-            model='gemini-3.8-flash', 
+            model='gemini-1.5-flash', 
             contents=prompt_usuario,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
@@ -1010,3 +1027,142 @@ async def obtener_monitoreo_fusionado():
     
     fusion = FusionSensorialRespuesta(alerta_activa=True, nivel_riesgo="ALTO", mensaje="Concentración de eCO2 elevada.")
     return MonitoreoFusionadoResponse(timestamp=timestamp_actual, telemetria=TelemetriaInflux(**telemetria_data), detecciones_yolo=lista_detecciones, fusion_sensorial=fusion)
+
+
+# ============================================================
+# VISIÓN POR COMPUTADOR: YOLO (ROBOFLOW)
+# ============================================================
+
+ROBOFLOW_API_KEY = os.getenv("ROBOFLOW_API_KEY", "")
+ROBOFLOW_MODEL_ID = os.getenv("ROBOFLOW_MODEL_ID", "vipis-vision-air/2")
+ROBOFLOW_URL = "https://detect.roboflow.com"
+MAX_IMAGEN_BYTES = 2_000_000  # 2 MB por imagen
+
+
+@app.post(
+    "/analizar-imagen",
+    tags=["vision_yolo"],
+    summary="Detectar objetos en una imagen con YOLO (Roboflow)",
+    description="Recibe una imagen (campo 'file'), la envía al modelo en Roboflow y devuelve las detecciones."
+)
+async def analizar_imagen_yolo(file: UploadFile = File(...), confianza: int = 40, db: Session = Depends(get_db)):
+    if not ROBOFLOW_API_KEY:
+        raise HTTPException(status_code=500, detail="ROBOFLOW_API_KEY no está configurada en el servidor.")
+
+    contenido = await file.read()
+    if not contenido:
+        raise HTTPException(status_code=400, detail="La imagen está vacía.")
+    if len(contenido) > MAX_IMAGEN_BYTES:
+        raise HTTPException(status_code=413, detail="La imagen supera el máximo de 2 MB.")
+
+    confianza = max(1, min(confianza, 100))
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client_http:
+            respuesta = await client_http.post(
+                f"{ROBOFLOW_URL}/{ROBOFLOW_MODEL_ID}",
+                params={"api_key": ROBOFLOW_API_KEY, "confidence": confianza},
+                content=base64.b64encode(contenido),
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"No se pudo contactar a Roboflow: {type(e).__name__}")
+
+    if respuesta.status_code != 200:
+        print(f"Roboflow respondió {respuesta.status_code}: {respuesta.text[:200]}")
+        raise HTTPException(status_code=502, detail=f"Roboflow respondió con código {respuesta.status_code}")
+
+    datos = respuesta.json()
+    predicciones = datos.get("predictions", [])
+
+    # Evaluar si hay que disparar una alerta (umbral + frames seguidos + enfriamiento)
+    evaluacion = evaluador_vision.evaluar(predicciones)
+    alerta = None
+    if evaluacion["alerta"]:
+        alerta = await _disparar_alerta_vision(db, evaluacion["mejor"])
+
+    return {
+        "status": "success",
+        "predicciones": predicciones,
+        "imagen": datos.get("image"),
+        "alerta": alerta,
+    }
+
+
+async def _disparar_alerta_vision(db: Session, mejor: dict) -> dict:
+    """Enciende el LED, avisa por Telegram y guarda el registro. Cada paso es independiente."""
+    clase = str(mejor.get("class", "desconocido"))
+    confianza = round(float(mejor.get("confidence", 0)) * 100, 2)
+    led_ok = False
+    telegram_ok = False
+
+    # 1) LED: el ESP32 lo lee por polling en GET /led
+    try:
+        db.execute(text("INSERT INTO comandos_led (estado) VALUES ('on');"))
+        db.commit()
+        evaluador_vision.marcar_led_encendido()
+        led_ok = True
+    except Exception as e:
+        db.rollback()
+        print(f"Alerta visión: no se pudo encender el LED: {e}")
+
+    # 2) Telegram
+    try:
+        telegram_ok = await enviar_mensaje_telegram(
+            f"🔥 *ALERTA VISIÓN VIPIS*\n\n"
+            f"Se detectó *{clase}* con {confianza}% de confianza.\n"
+            f"💡 LED: {'encendido' if led_ok else 'no se pudo encender'}"
+        )
+    except Exception as e:
+        print(f"Alerta visión: no se pudo enviar Telegram: {e}")
+
+    # 3) Registro en Neon
+    try:
+        _asegurar_tabla_detecciones(db)
+        db.execute(
+            text("""INSERT INTO detecciones_vision (clase, confianza, led_activado, telegram_enviado)
+                    VALUES (:clase, :confianza, :led, :tg);"""),
+            {"clase": clase, "confianza": confianza, "led": led_ok, "tg": bool(telegram_ok)},
+        )
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"Alerta visión: no se pudo guardar el registro: {e}")
+
+    return {"clase": clase, "confianza": confianza, "led": led_ok, "telegram": bool(telegram_ok)}
+
+
+def _asegurar_tabla_detecciones(db: Session):
+    db.execute(text("""
+        CREATE TABLE IF NOT EXISTS detecciones_vision (
+            id SERIAL PRIMARY KEY,
+            fecha_hora TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            clase VARCHAR(100) NOT NULL,
+            confianza NUMERIC(5,2) NOT NULL,
+            led_activado BOOLEAN NOT NULL DEFAULT FALSE,
+            telegram_enviado BOOLEAN NOT NULL DEFAULT FALSE
+        );
+    """))
+    db.commit()
+
+
+@app.get(
+    "/vision/alertas",
+    tags=["vision_yolo"],
+    summary="Historial de alertas de visión",
+    description="Devuelve las últimas alertas disparadas por la detección de fuego/humo."
+)
+def listar_alertas_vision(limit: int = 20, db: Session = Depends(get_db)):
+    limit = max(1, min(limit, 100))
+    _asegurar_tabla_detecciones(db)
+    rows = db.execute(
+        text("""SELECT id, fecha_hora, clase, confianza, led_activado, telegram_enviado
+                FROM detecciones_vision ORDER BY fecha_hora DESC LIMIT :limit;"""),
+        {"limit": limit},
+    ).fetchall()
+    return {"total": len(rows), "alertas": [
+        {"id": r.id, "fecha_hora": r.fecha_hora, "clase": r.clase,
+         "confianza": float(r.confianza), "led_activado": r.led_activado,
+         "telegram_enviado": r.telegram_enviado}
+        for r in rows
+    ]}
