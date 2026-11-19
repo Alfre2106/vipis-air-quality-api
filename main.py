@@ -82,12 +82,12 @@ api_key_gemini = os.getenv("GEMINI_API_KEY")
 try:
     client = genai.Client(api_key=api_key_gemini) if api_key_gemini else None
     if client:
-        print("✅ Cliente de Google GenAI inicializado correctamente.")
+        print("✅ Cliente de Google GenAI inicializado correctamente.", flush=True)
     else:
-        print("⚠️ GEMINI_API_KEY no configurada. El endpoint /chat funcionará en modo respaldo.")
+        print("⚠️ GEMINI_API_KEY no configurada. El endpoint /chat funcionará en modo respaldo.", flush=True)
 except Exception as e:
     client = None
-    print(f"⚠️ GEMINI_API_KEY no configurada o error al iniciar: {e}")
+    print(f"⚠️ GEMINI_API_KEY no configurada o error al iniciar: {e}", flush=True)
 
 
 # ============================================================
@@ -322,25 +322,6 @@ async def chat_con_ia(mensaje: MensajeChat, db: Session = Depends(get_db)):
     except Exception:
         pass
 
-    # Últimas detecciones de visión por computador
-    try:
-        detecciones = db.execute(text("""
-            SELECT clase, confianza, fecha_hora
-            FROM detecciones_vision
-            ORDER BY fecha_hora DESC
-            LIMIT 3;
-        """)).fetchall()
-        if detecciones:
-            det_str = "; ".join([
-                f"{d.clase} ({float(d.confianza)}% el {str(d.fecha_hora)[:19]})"
-                for d in detecciones
-            ])
-            contexto.append(f"Últimas alertas de visión (YOLO): {det_str}.")
-        else:
-            contexto.append("Últimas alertas de visión (YOLO): sin eventos recientes registrados.")
-    except Exception:
-        pass
-
     # Dispositivos
     try:
         dispositivos = db.query(models.Dispositivo).all()
@@ -411,14 +392,14 @@ Responde ÚNICAMENTE con un objeto JSON válido con exactamente dos claves:
         if client is None:
             raise Exception("Gemini no configurado (modo respaldo local)")
 
-response = client.models.generate_content(
-    model="gemini-3.8-flash",
-    contents=prompt_usuario,
-    config=types.GenerateContentConfig(
-        system_instruction=system_instruction,
-        response_mime_type="application/json",
-    ),
-)
+        response = client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=prompt_usuario,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                response_mime_type="application/json",
+            ),
+        )
 
         resultado = json.loads(response.text)
         accion = resultado.get("accion", "desconocido")
@@ -442,7 +423,7 @@ response = client.models.generate_content(
         }
 
     except Exception as e:
-        print(f"ERROR EXACTO DE GEMINI: {str(e)}")
+        print(f"ERROR EXACTO DE GEMINI: {str(e)}", flush=True)
         # Respaldo local natural por si Gemini no está disponible
         texto_lower = prompt_usuario.lower()
         accion = "consulta"
@@ -586,10 +567,10 @@ response = client.models.generate_content(
 
 try:
     modelo_ml = joblib.load("modelo_vipis_ml.pkl")
-    print("✅ Modelo de Machine Learning cargado correctamente.")
+    print("✅ Modelo de Machine Learning cargado correctamente.", flush=True)
 except Exception as e:
     modelo_ml = None
-    print(f"⚠️ Error al cargar el modelo de Machine Learning: {e}")
+    print(f"⚠️ Error al cargar el modelo de Machine Learning: {e}", flush=True)
 
 
 class MedicionML(BaseModel):
@@ -1082,7 +1063,7 @@ async def analizar_imagen_yolo(file: UploadFile = File(...), confianza: int = 40
         raise HTTPException(status_code=502, detail=f"No se pudo contactar a Roboflow: {type(e).__name__}")
 
     if respuesta.status_code != 200:
-        print(f"Roboflow respondió {respuesta.status_code}: {respuesta.text[:200]}")
+        print(f"Roboflow respondió {respuesta.status_code}: {respuesta.text[:200]}", flush=True)
         raise HTTPException(status_code=502, detail=f"Roboflow respondió con código {respuesta.status_code}")
 
     datos = respuesta.json()
@@ -1117,7 +1098,7 @@ async def _disparar_alerta_vision(db: Session, mejor: dict) -> dict:
         led_ok = True
     except Exception as e:
         db.rollback()
-        print(f"Alerta visión: no se pudo encender el LED: {e}")
+        print(f"Alerta visión: no se pudo encender el LED: {e}", flush=True)
 
     # 2) Telegram
     try:
@@ -1127,7 +1108,7 @@ async def _disparar_alerta_vision(db: Session, mejor: dict) -> dict:
             f"💡 LED: {'encendido' if led_ok else 'no se pudo encender'}"
         )
     except Exception as e:
-        print(f"Alerta visión: no se pudo enviar Telegram: {e}")
+        print(f"Alerta visión: no se pudo enviar Telegram: {e}", flush=True)
 
     # 3) Registro en Neon
     try:
@@ -1140,9 +1121,9 @@ async def _disparar_alerta_vision(db: Session, mejor: dict) -> dict:
         db.commit()
     except Exception as e:
         db.rollback()
-        print(f"Alerta visión: no se pudo guardar el registro: {e}")
+        print(f"Alerta visión: no se pudo guardar el registro: {e}", flush=True)
 
-    return {"clase": clase, "confianza": confianza, "led_activado": led_ok, "telegram": bool(telegram_ok)}
+    return {"clase": clase, "confianza": confianza, "led": led_ok, "telegram": bool(telegram_ok)}
 
 
 def _asegurar_tabla_detecciones(db: Session):
